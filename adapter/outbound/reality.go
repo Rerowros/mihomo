@@ -17,6 +17,10 @@ type RealityOptions struct {
 	// Deprecated: REALITY always preserves the selected browser fingerprint.
 	// Use an explicit legacy fingerprint such as chrome120 for legacy servers.
 	SupportX25519MLKEM768 bool `proxy:"support-x25519mlkem768,omitempty"`
+
+	// ClientVersion overrides the "x.y.z" version reported to the server
+	// (default tlsC.DefaultRealityClientVersion).
+	ClientVersion string `proxy:"client-version,omitempty"`
 }
 
 func (o RealityOptions) Parse() (*tlsC.RealityConfig, error) {
@@ -40,6 +44,13 @@ func (o RealityOptions) Parse() (*tlsC.RealityConfig, error) {
 		n, err = hex.Decode(config.ShortID[:], []byte(o.ShortID))
 		if err != nil || n > tlsC.RealityMaxShortIDLen {
 			return nil, errors.New("invalid REALITY short ID")
+		}
+
+		if o.ClientVersion != "" {
+			config.ClientVersion, err = tlsC.ParseRealityClientVersion(o.ClientVersion)
+			if err != nil {
+				return nil, err
+			}
 		}
 
 		return config, nil
