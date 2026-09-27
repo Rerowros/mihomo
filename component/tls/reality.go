@@ -13,7 +13,9 @@ import (
 	"crypto/x509"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"net"
+	"strconv"
 	"strings"
 	"time"
 
@@ -26,20 +28,41 @@ import (
 	"golang.org/x/crypto/hkdf"
 )
 
-const (
-	RealityMaxShortIDLen = 8
+const RealityMaxShortIDLen = 8
 
-	// The REALITY protocol uses Xray-style release bytes as a compatibility
-	// gate. These bytes represent Mihomo's tested REALITY compatibility, not
-	// Mihomo's application version.
-	realityClientVersionMajor byte = 26
-	realityClientVersionMinor byte = 3
-	realityClientVersionPatch byte = 27
-)
+// RealityClientVersion is the Xray-style "x.y.z" version that a REALITY client
+// puts into the first three bytes of the session ID. Xray servers compare it
+// with minClientVer/maxClientVer.
+type RealityClientVersion [3]byte
+
+// DefaultRealityClientVersion is reported when reality-opts.client-version is
+// not set. It represents the tested REALITY compatibility (Xray-core 26.3.27),
+// not Mihomo's application version.
+var DefaultRealityClientVersion = RealityClientVersion{26, 3, 27}
+
+// ParseRealityClientVersion parses "x.y.z" (each part 0-255).
+func ParseRealityClientVersion(s string) (RealityClientVersion, error) {
+	var v RealityClientVersion
+	parts := strings.Split(s, ".")
+	if len(parts) != len(v) {
+		return v, fmt.Errorf("invalid REALITY client version %q, want x.y.z", s)
+	}
+	for i, part := range parts {
+		n, err := strconv.ParseUint(part, 10, 8)
+		if err != nil {
+			return v, fmt.Errorf("invalid REALITY client version %q, want x.y.z", s)
+		}
+		v[i] = byte(n)
+	}
+	return v, nil
+}
 
 type RealityConfig struct {
 	PublicKey *ecdh.PublicKey
 	ShortID   [RealityMaxShortIDLen]byte
+
+	// ClientVersion is reported in the session ID; zero value means DefaultRealityClientVersion.
+	ClientVersion RealityClientVersion
 }
 
 func GetRealityConn(ctx context.Context, conn net.Conn, fingerprint UClientHelloID, serverName string, realityConfig *RealityConfig) (net.Conn, error) {
@@ -71,9 +94,11 @@ func GetRealityConn(ctx context.Context, conn net.Conn, fingerprint UClientHello
 		binary.BigEndian.PutUint64(hello.SessionId, uint64(ntp.Now().Unix()))
 
 		copy(hello.SessionId[8:], realityConfig.ShortID[:])
-		hello.SessionId[0] = realityClientVersionMajor
-		hello.SessionId[1] = realityClientVersionMinor
-		hello.SessionId[2] = realityClientVersionPatch
+		clientVersion := realityConfig.ClientVersion
+		if clientVersion == (RealityClientVersion{}) {
+			clientVersion = DefaultRealityClientVersion
+		}
+		copy(hello.SessionId[:3], clientVersion[:])
 
 		//log.Debugln("REALITY hello.sessionId[:16]: %v", hello.SessionId[:16])
 
