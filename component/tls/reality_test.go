@@ -20,7 +20,9 @@ import (
 )
 
 func TestRealityChromeClientHelloPreservesFingerprint(t *testing.T) {
-	hello, privateKey := captureRealityClientHello(t, utls.HelloChrome_Auto)
+	// BadVPN P4: the full fingerprint (with X25519MLKEM768) is only sent when
+	// support-x25519mlkem768 is set; see TestBPNRealityMLKEMKeyShare.
+	hello, privateKey := captureRealityClientHelloWithConfig(t, utls.HelloChrome_Auto, RealityConfig{SupportX25519MLKEM768: true})
 	baseline := buildClientHello(t, utls.HelloChrome_Auto)
 
 	assertClientHelloShape(t, baseline, hello)

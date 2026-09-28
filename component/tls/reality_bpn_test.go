@@ -5,6 +5,7 @@ import (
 	"crypto/ecdh"
 	"crypto/rand"
 	"net"
+	"slices"
 	"testing"
 	"time"
 
@@ -12,8 +13,10 @@ import (
 )
 
 // BadVPN patch set (see BADVPN.md): REALITY must report the Xray-style client
-// version 26.3.27 and keep the fingerprint's X25519MLKEM768 key share, placed
-// before X25519, as Xray >= 26.9.8 (XTLS/REALITY 8cdf7bf) requires.
+// version 26.3.27 (P1/P3). X25519MLKEM768 is stripped from the ClientHello
+// unless reality-opts.support-x25519mlkem768 is true (P4, upstream semantics);
+// with it, the fingerprint's ML-KEM key share stays before X25519, as Xray
+// >= 26.9.8 (XTLS/REALITY 8cdf7bf) requires.
 
 func TestBPNFingerprintVersions(t *testing.T) {
 	// Guards against Go MVS silently resolving metacubex/utls back to v1.8.7
@@ -52,7 +55,7 @@ func TestBPNRealityDefaultClientVersion(t *testing.T) {
 
 func TestBPNRealityClientVersionOverride(t *testing.T) {
 	id, _ := GetFingerprint("firefox")
-	hello, privateKey := captureRealityClientHelloWithConfig(t, id, RealityClientVersion{1, 8, 2})
+	hello, privateKey := captureRealityClientHelloWithConfig(t, id, RealityConfig{ClientVersion: RealityClientVersion{1, 8, 2}})
 	plain := decryptRealitySessionID(t, hello, privateKey)
 	if got, want := [3]byte(plain[:3]), [3]byte{1, 8, 2}; got != want {
 		t.Fatalf("REALITY client version = %v, want %v", got, want)
@@ -90,8 +93,8 @@ func xrayAcceptsKeyShares(keyShares []utls.KeyShare) bool {
 	return hasMLKEM
 }
 
-func TestBPNRealityKeepsMLKEMKeyShare(t *testing.T) {
-	for name, want := range map[string]bool{
+func TestBPNRealityMLKEMKeyShare(t *testing.T) {
+	for name, withMLKEM := range map[string]bool{
 		"chrome":  true,
 		"firefox": true,
 		"safari":  true,
@@ -102,20 +105,38 @@ func TestBPNRealityKeepsMLKEMKeyShare(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			id, _ := GetFingerprint(name)
+
+			// Default: ML-KEM stripped from supported groups and key shares,
+			// X25519 key share kept.
 			hello, _ := captureRealityClientHello(t, id)
-			groups := make([]utls.CurveID, 0, len(hello.KeyShares))
-			for _, ks := range hello.KeyShares {
-				groups = append(groups, ks.Group)
+			t.Logf("%s %s default: ClientHello %d bytes, key shares %v", id.Client, id.Version, len(hello.Raw), keyShareGroups(hello))
+			if slices.Contains(hello.SupportedCurves, utls.X25519MLKEM768) || slices.Contains(keyShareGroups(hello), utls.X25519MLKEM768) {
+				t.Fatalf("default ClientHello contains X25519MLKEM768: curves %v, key shares %v", hello.SupportedCurves, keyShareGroups(hello))
 			}
-			t.Logf("%s %s key shares: %v", id.Client, id.Version, groups)
-			if got := xrayAcceptsKeyShares(hello.KeyShares); got != want {
-				t.Fatalf("ML-KEM before X25519 = %v, want %v (key shares %v)", got, want, groups)
+			if !slices.Contains(keyShareGroups(hello), utls.X25519) {
+				t.Fatalf("default ClientHello has no X25519 key share: %v", keyShareGroups(hello))
+			}
+
+			// support-x25519mlkem768: true keeps the fingerprint's ML-KEM key
+			// share before X25519.
+			hello, _ = captureRealityClientHelloWithConfig(t, id, RealityConfig{SupportX25519MLKEM768: true})
+			t.Logf("%s %s support-x25519mlkem768: ClientHello %d bytes, key shares %v", id.Client, id.Version, len(hello.Raw), keyShareGroups(hello))
+			if got := xrayAcceptsKeyShares(hello.KeyShares); got != withMLKEM {
+				t.Fatalf("ML-KEM before X25519 = %v, want %v (key shares %v)", got, withMLKEM, keyShareGroups(hello))
 			}
 		})
 	}
 }
 
-func captureRealityClientHelloWithConfig(t *testing.T, fingerprint utls.ClientHelloID, clientVersion RealityClientVersion) (*utls.PubClientHelloMsg, *ecdh.PrivateKey) {
+func keyShareGroups(hello *utls.PubClientHelloMsg) []utls.CurveID {
+	groups := make([]utls.CurveID, 0, len(hello.KeyShares))
+	for _, ks := range hello.KeyShares {
+		groups = append(groups, ks.Group)
+	}
+	return groups
+}
+
+func captureRealityClientHelloWithConfig(t *testing.T, fingerprint utls.ClientHelloID, config RealityConfig) (*utls.PubClientHelloMsg, *ecdh.PrivateKey) {
 	t.Helper()
 	privateKey, err := ecdh.X25519().GenerateKey(rand.Reader)
 	if err != nil {
@@ -132,10 +153,8 @@ func captureRealityClientHelloWithConfig(t *testing.T, fingerprint utls.ClientHe
 
 	result := make(chan error, 1)
 	go func() {
-		_, err := GetRealityConn(context.Background(), client, fingerprint, "example.com", &RealityConfig{
-			PublicKey:     privateKey.PublicKey(),
-			ClientVersion: clientVersion,
-		})
+		config.PublicKey = privateKey.PublicKey()
+		_, err := GetRealityConn(context.Background(), client, fingerprint, "example.com", &config)
 		result <- err
 	}()
 
