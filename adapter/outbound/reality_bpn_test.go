@@ -36,3 +36,21 @@ func TestBPNRealityOptionsClientVersion(t *testing.T) {
 		t.Fatal("invalid client-version accepted")
 	}
 }
+
+func TestBPNRealityOptionsSupportX25519MLKEM768(t *testing.T) {
+	privateKey, err := ecdh.X25519().GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	publicKey := base64.RawURLEncoding.EncodeToString(privateKey.PublicKey().Bytes())
+
+	for _, want := range []bool{false, true} {
+		config, err := RealityOptions{PublicKey: publicKey, SupportX25519MLKEM768: want}.Parse()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if config.SupportX25519MLKEM768 != want {
+			t.Fatalf("support-x25519mlkem768 = %v, want %v", config.SupportX25519MLKEM768, want)
+		}
+	}
+}

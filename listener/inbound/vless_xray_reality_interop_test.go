@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -34,6 +35,9 @@ func TestVLESSRealityXrayInterop(t *testing.T) {
 	versionOutput, err := exec.Command(xrayBinary, "version").CombinedOutput()
 	require.NoError(t, err, "xray version: %s", versionOutput)
 	t.Logf("Xray executable: %s\n%s", xrayBinary, versionOutput)
+	// BadVPN P4: ML-KEM is stripped unless support-x25519mlkem768 is set, and
+	// Xray >= 26.9.8 rejects ClientHellos without it.
+	supportX25519MLKEM768 := bpnMatrixVersionAtLeast(t, strings.Fields(string(versionOutput))[1], 26, 9, 8)
 
 	origin := startTLSMirrorInteropCarrierTLS(t)
 	echoAddr := startVMessInteropEcho(t)
@@ -74,8 +78,9 @@ func TestVLESSRealityXrayInterop(t *testing.T) {
 				ServerName:        "localhost",
 				ClientFingerprint: testCase.clientFingerprint,
 				RealityOpts: outbound.RealityOptions{
-					PublicKey: base64.RawURLEncoding.EncodeToString(privateKey.PublicKey().Bytes()),
-					ShortID:   xrayRealityShortID,
+					PublicKey:             base64.RawURLEncoding.EncodeToString(privateKey.PublicKey().Bytes()),
+					ShortID:               xrayRealityShortID,
+					SupportX25519MLKEM768: supportX25519MLKEM768,
 				},
 			})
 			require.NoError(t, err)
