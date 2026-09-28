@@ -61,6 +61,8 @@ type RealityConfig struct {
 	PublicKey *ecdh.PublicKey
 	ShortID   [RealityMaxShortIDLen]byte
 
+	SupportX25519MLKEM768 bool
+
 	// ClientVersion is reported in the session ID; zero value means DefaultRealityClientVersion.
 	ClientVersion RealityClientVersion
 }
@@ -83,6 +85,13 @@ func GetRealityConn(ctx context.Context, conn net.Conn, fingerprint UClientHello
 		err := uConn.BuildHandshakeState()
 		if err != nil {
 			return nil, err
+		}
+
+		if !realityConfig.SupportX25519MLKEM768 { // BadVPN P4: see adapter/outbound/reality.go
+			err = BuildRemovedX25519MLKEM768HandshakeState(uConn)
+			if err != nil {
+				return nil, err
+			}
 		}
 
 		hello := uConn.HandshakeState.Hello

@@ -2,7 +2,7 @@
 
 Эта ветка (`bpn/<тег mihomo>`) — ядро mihomo для Android-клиента BadVPN. Это тег upstream [MetaCubeX/mihomo](https://github.com/MetaCubeX/mihomo) плюс небольшой набор патчей ниже. Больше ничего не меняется.
 
-*English summary: MetaCubeX/mihomo tag + a small patch set for REALITY compatibility with current Xray-core (client version 26.3.27, keep ML-KEM key share, empty fingerprint → chrome, optional `reality-opts.client-version`) and metacubex/utls `v1.9.0-mod-meta` (Firefox 148 / Safari 26.3). Not affiliated with MetaCubeX; please do not report issues from this build upstream.*
+*English summary: MetaCubeX/mihomo tag + a small patch set for REALITY compatibility with current Xray-core (client version 26.3.27, empty fingerprint → chrome, optional `reality-opts.client-version`; X25519MLKEM768 is stripped unless `reality-opts.support-x25519mlkem768: true`, as upstream) and metacubex/utls `v1.9.0-mod-meta` (Firefox 148 / Safari 26.3). Not affiliated with MetaCubeX; please do not report issues from this build upstream.*
 
 - Upstream: `MetaCubeX/mihomo`, тег **v1.19.31** (`ab405bad`).
 - Ветка: `bpn/v1.19.31`. Коммиты патчей: `v1.19.31..bpn/v1.19.31`.
@@ -12,9 +12,10 @@
 
 | # | Что меняет | Зачем | Файлы | Источник / автор / лицензия | С версии mihomo | Проверка | Когда убрать |
 |---|---|---|---|---|---|---|---|
-| **P1** | REALITY-клиент шлёт в session ID версию **26.3.27** вместо 1.8.2. Не вырезает X25519MLKEM768 из отпечатка: опция `support-x25519mlkem768` устарела и игнорируется, для старых серверов есть `chrome120`/`firefox120`/`safari16`. Пустой `client-fingerprint` у REALITY → `chrome` (раньше была ошибка). Заодно в серверной части (listener REALITY) `max-time-difference` считается в миллисекундах, а не в микросекундах; приложение listener не использует | Совместимость с Xray ≥ 26.7.11 (умолчание `minClientVer` 26.3.27) и ≥ 26.9.8 (обязателен X25519MLKEM768 раньше X25519, [XTLS/REALITY 8cdf7bf](https://github.com/XTLS/REALITY/commit/8cdf7bf9c7f09cb9814bf08c3eb877f68b85fba8)). Upstream отказался: [#2967](https://github.com/MetaCubeX/mihomo/issues/2967), [#3132](https://github.com/MetaCubeX/mihomo/issues/3132), [#3193](https://github.com/MetaCubeX/mihomo/issues/3193), [PR #3070](https://github.com/MetaCubeX/mihomo/pull/3070) | `component/tls/reality.go`, `adapter/outbound/reality.go`, `transport/vmess/tls.go`, `listener/reality/reality.go` + тесты | cherry-pick `84cc2c17` ← [legiz-ru/Prizrak-Core `2197a3c`](https://github.com/legiz-ru/Prizrak-Core/commit/2197a3cac1e960987e3844a638a281509bb265ae), автор Jolymmiles (авторство в git сохранено), GPL-3.0 | v1.19.31 | `component/tls/reality_test.go`, `transport/vmess/tls_test.go`, `listener/reality/reality_test.go`; interop с настоящим Xray: `TestVLESSRealityXrayInterop`, `TestBPNRealityXrayMatrix` (см. ниже) | Когда upstream mihomo сам начнёт слать актуальную версию и перестанет вырезать ML-KEM. Или когда у BadVPN не останется REALITY-нод |
-| **P2** | `github.com/metacubex/utls` v1.8.7 → голова ветки `v1.9.0-mod-meta` (`v0.0.0-20260924074610-04010625d68b`). Отпечатки: `firefox` Firefox 120 → **148**, `safari` Safari 16.0 → **26.3**, оба с X25519MLKEM768. `chrome` (133), `edge` (85), `ios` (14), `android` (OkHttp 11) не менялись. Кода mihomo правка не требует | Свежие отпечатки, те же, что у Xray ≥ 26.3.27. Без них `firefox` на Xray ≥ 26.9.8 не проходит (нет ML-KEM). У BadVPN tcp+REALITY-хосты с `firefox`. Upstream ждёт релиза uTLS 1.9.0 ([#3193](https://github.com/MetaCubeX/mihomo/issues/3193)) | `go.mod`, `go.sum` | коммит `28e9ea26` (свой). Код utls: [metacubex/utls@v1.9.0-mod-meta](https://github.com/metacubex/utls/tree/v1.9.0-mod-meta) (wwqgtxx и др.), BSD-3-Clause | v1.19.31 | `TestBPNFingerprintVersions` (firefox = 148, safari = 26.3), `TestBPNRealityKeepsMLKEMKeyShare`, interop-матрица | Когда upstream mihomo поднимет utls до версии с Firefox 148 / Safari 26.3 |
+| **P1** | REALITY-клиент шлёт в session ID версию **26.3.27** вместо 1.8.2. В исходном коммите P1 ещё переставал вырезать X25519MLKEM768 (`support-x25519mlkem768` игнорировался) — **это отменено патчем P4**, вырезание снова как в upstream. Пустой `client-fingerprint` у REALITY → `chrome` (раньше была ошибка). Заодно в серверной части (listener REALITY) `max-time-difference` считается в миллисекундах, а не в микросекундах; приложение listener не использует | Совместимость с Xray ≥ 26.7.11 (умолчание `minClientVer` 26.3.27) и ≥ 26.9.8 (обязателен X25519MLKEM768 раньше X25519, [XTLS/REALITY 8cdf7bf](https://github.com/XTLS/REALITY/commit/8cdf7bf9c7f09cb9814bf08c3eb877f68b85fba8)). Upstream отказался: [#2967](https://github.com/MetaCubeX/mihomo/issues/2967), [#3132](https://github.com/MetaCubeX/mihomo/issues/3132), [#3193](https://github.com/MetaCubeX/mihomo/issues/3193), [PR #3070](https://github.com/MetaCubeX/mihomo/pull/3070) | `component/tls/reality.go`, `adapter/outbound/reality.go`, `transport/vmess/tls.go`, `listener/reality/reality.go` + тесты | cherry-pick `84cc2c17` ← [legiz-ru/Prizrak-Core `2197a3c`](https://github.com/legiz-ru/Prizrak-Core/commit/2197a3cac1e960987e3844a638a281509bb265ae), автор Jolymmiles (авторство в git сохранено), GPL-3.0 | v1.19.31 | `component/tls/reality_test.go`, `transport/vmess/tls_test.go`, `listener/reality/reality_test.go`; interop с настоящим Xray: `TestVLESSRealityXrayInterop`, `TestBPNRealityXrayMatrix` (см. ниже) | Когда upstream mihomo сам начнёт слать актуальную версию. Или когда у BadVPN не останется REALITY-нод |
+| **P2** | `github.com/metacubex/utls` v1.8.7 → голова ветки `v1.9.0-mod-meta` (`v0.0.0-20260924074610-04010625d68b`). Отпечатки: `firefox` Firefox 120 → **148**, `safari` Safari 16.0 → **26.3**, оба с X25519MLKEM768. `chrome` (133), `edge` (85), `ios` (14), `android` (OkHttp 11) не менялись. Кода mihomo правка не требует | Свежие отпечатки, те же, что у Xray ≥ 26.3.27. Без них `firefox` на Xray ≥ 26.9.8 не проходит даже с `support-x25519mlkem768: true` (в Firefox 120 нет ML-KEM). У BadVPN tcp+REALITY-хосты с `firefox`. Upstream ждёт релиза uTLS 1.9.0 ([#3193](https://github.com/MetaCubeX/mihomo/issues/3193)) | `go.mod`, `go.sum` | коммит `28e9ea26` (свой). Код utls: [metacubex/utls@v1.9.0-mod-meta](https://github.com/metacubex/utls/tree/v1.9.0-mod-meta) (wwqgtxx и др.), BSD-3-Clause | v1.19.31 | `TestBPNFingerprintVersions` (firefox = 148, safari = 26.3), `TestBPNRealityMLKEMKeyShare`, interop-матрица | Когда upstream mihomo поднимет utls до версии с Firefox 148 / Safari 26.3 |
 | **P3** | Необязательное поле `reality-opts.client-version: "x.y.z"` для каждого прокси. Версия по умолчанию задана в одном месте: `tlsC.DefaultRealityClientVersion` = 26.3.27. Значение `0.0.0` означает умолчание | Если на ноде задан `minClientVer` выше 26.3.27, версию можно поднять без пересборки ядра (через шаблон подписки) | `component/tls/reality.go`, `adapter/outbound/reality.go` + `*_bpn_test.go` | коммит `48d461ce` (свой, GPL-3.0 как mihomo). Идея — закрытый upstream [PR #3069](https://github.com/MetaCubeX/mihomo/pull/3069) | v1.19.31 | `TestBPNRealityDefaultClientVersion`, `TestBPNRealityClientVersionOverride`, `TestBPNParseRealityClientVersion`, `TestBPNRealityOptionsClientVersion` | Вместе с P1 |
+| **P4** | X25519MLKEM768 снова вырезается из ClientHello (supported groups и key share), если в `reality-opts` не задано `support-x25519mlkem768: true`. Это семантика upstream mihomo; P1 её убирал. Поле `RealityConfig.SupportX25519MLKEM768` возвращено | 28.09.2026: сборка приложения с P1+P2 без P4 (ML-KEM в ClientHello chrome/firefox/safari, 1529–1881 байт вместо 307–659) не подключалась ни к одной REALITY-ноде (Xray 26.3.27, tcp, без flow, реальные target без X25519MLKEM768 — nginx на OpenSSL 3.0 / внешний сайт). Та же сборка с вырезанием ML-KEM — работает. На локальном стенде поломка **не воспроизводится** (см. «Проверка»): старый код проходит и с target без ML-KEM (Go и `openssl s_server`), и при дроблении ClientHello на TCP-сегменты; логика ключей клиента совпадает с Xray-клиентом. Причина, вероятно, на пути до ноды, а не в ядре. Цена: Xray ≥ 26.9.8 без ML-KEM не пускает — для таких нод в подписке нужен `support-x25519mlkem768: true` | `component/tls/reality.go`, `adapter/outbound/reality.go`; тесты `component/tls/reality_bpn_test.go`, `component/tls/reality_test.go`, `adapter/outbound/reality_bpn_test.go`, `listener/inbound/bpn_reality_xray_matrix_test.go`, `listener/inbound/vless_xray_reality_interop_test.go` | коммит `fix(reality): strip X25519MLKEM768 unless support-x25519mlkem768 (P4)` (свой, GPL-3.0 как mihomo); код — возврат upstream | v1.19.31 | `TestBPNRealityMLKEMKeyShare` (по умолчанию ML-KEM нет, с опцией — есть и стоит до X25519), `TestRealityChromeClientHelloPreservesFingerprint` (с опцией отпечаток не меняется), `TestBPNRealityOptionsSupportX25519MLKEM768`, interop-матрица; проверка на телефоне по всем типам нод | Вместе с P1 (без P1 это просто код upstream). Умолчание можно перевернуть, когда причина полевой поломки будет найдена и устранена, а ноды перейдут на Xray ≥ 26.9.8 |
 
 Только тесты, поведение не меняют: `ad4c3f42` — `listener/inbound/bpn_reality_xray_matrix_test.go`.
 
@@ -36,20 +37,30 @@ go test ./component/tls/... ./adapter/outbound/... ./transport/... ./listener/re
 go test ./...   # listener/inbound идёт ~2-3 мин и качает v2ray-core для своих interop-тестов
 ```
 
-Interop с настоящим Xray, без интернета и без реальных серверов. Xray REALITY-сервер поднимается на 127.0.0.1, target — локальный TLS-сервер:
+Interop с настоящим Xray, без интернета и без реальных серверов. Xray REALITY-сервер поднимается на 127.0.0.1, target — локальный TLS-сервер: Go с X25519MLKEM768 (`target-mlkem`), Go только с X25519 (`target-x25519`), Go с X25519 + P-256 (`target-x25519-p256`) и, если задан `OPENSSL_BINARY`, `openssl s_server` с группами OpenSSL 3.0 по умолчанию, без ML-KEM (`target-openssl-no-mlkem`):
 
 ```sh
 # бинарь Xray: https://github.com/XTLS/Xray-core/releases, sha256 сверять с .dgst
-XRAY_BINARY=/path/to/xray go test ./listener/inbound -run 'BPNRealityXrayMatrix|VLESSRealityXrayInterop' -v -count=1
+XRAY_BINARY=/path/to/xray OPENSSL_BINARY=/path/to/openssl go test ./listener/inbound -run 'BPNRealityXrayMatrix|VLESSRealityXrayInterop' -v -count=1
 ```
 
-Результат на `bpn/v1.19.31` (28.09.2026, Windows amd64, VLESS tcp + REALITY, без `minClientVer`):
+На Windows после полного `go test ./listener/inbound` бывают ложные падения матрицы («Only one usage of each socket address», исчерпаны локальные порты, тысячи TIME_WAIT) — перезапустить позже.
+
+Результат P4 на `bpn/v1.19.31` (28.09.2026, Windows amd64, VLESS tcp + REALITY без flow, без `minClientVer`; OpenSSL 3.5.6 с `-groups X25519:P-256:X448:P-521:P-384`). Одинаков для всех четырёх target:
 
 | Клиент | Xray 26.3.27 | Xray 26.7.28 | Xray 26.9.9 |
 |---|---|---|---|
-| bpn: chrome / firefox / safari | ok / ok / ok | ok / ok / ok | ok / ok / ok |
-| bpn: пустой fingerprint (→ chrome) | ok | ok | ok |
-| bpn: edge (Edge 85, без ML-KEM) | ok | ok | **fail** (ожидаемо) |
+| P4 по умолчанию (ML-KEM вырезан): chrome / firefox / safari / пустой | ok | ok | **fail** (Xray ≥ 26.9.8 требует ML-KEM; сервер отдаёт клиента target → «x509: certificate signed by unknown authority») |
+| P4 + `support-x25519mlkem768: true`: chrome / firefox / safari / пустой | ok | ok | ok, в том числе с target без ML-KEM: сервер берёт группу, которую выбрал target (X25519) |
+| edge (Edge 85, без ML-KEM) | ok | ok | fail (ожидаемо) |
+| до P4 (`10e9fdc6`, ML-KEM всегда в ClientHello): chrome / firefox / safari / пустой | ok | ok | ok |
+
+Итог: на стенде `10e9fdc6` против target без ML-KEM **не падает** — полевую поломку 28.09 стенд не воспроизводит. Проверено отдельно: target реально выбирает X25519; дробление ClientHello на сегменты по 1400 и 536 байт с паузой 50 мс тоже не ломает. Размеры ClientHello (в логе `TestBPNRealityMLKEMKeyShare`): chrome 526 → 1748 байт с ML-KEM, firefox 659 → 1881, safari 307 → 1529; с ML-KEM ClientHello не помещается в один TCP-сегмент.
+
+Upstream v1.19.31 (utls v1.8.7), замер до P4 — только target с ML-KEM:
+
+| Клиент | Xray 26.3.27 | Xray 26.7.28 | Xray 26.9.9 |
+|---|---|---|---|
 | upstream v1.19.31: chrome / firefox / safari | ok / ok / ok | fail / fail / fail | fail / fail / fail |
 | upstream v1.19.31: chrome + `support-x25519mlkem768: true` | ok | fail | ok |
 | upstream v1.19.31: firefox + `support-x25519mlkem768: true` | ok | fail | fail |
@@ -84,7 +95,7 @@ Submodule `core/src/foss/golang/clash` в [Rerowros/bpnclash](https://github.com
 2. `cd core/src/foss/golang/clash && git fetch origin bpn/v1.19.31 && git checkout <коммит>`. Коммит на ветке `bpn/<тег>`, в приложении фиксируется хеш.
 3. В `core/src/main/golang/go.mod` и `core/src/foss/golang/go.mod` добавить `replace` для utls (см. выше), выполнить `go mod tidy` в обоих, проверить `go list -m github.com/metacubex/utls`.
 4. Очистить `core/build`: golang-таск не видит изменений submodule, иначе останется старая `libclash.so`. Собрать `assembleAlphaDebug` и проверить на телефоне все типы нод.
-5. Перенести P1–P3 в `docs/core-patches.md` в «Действующие» с хешами этой ветки.
+5. Перенести P1–P4 в `docs/core-patches.md` в «Действующие» с хешами этой ветки.
 
 ## Лицензии и атрибуция
 
