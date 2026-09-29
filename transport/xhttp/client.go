@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/metacubex/mihomo/common/contextutils"
@@ -38,9 +39,43 @@ type DialQUICFunc func(ctx context.Context, cfg *quic.Config) (*quic.Conn, error
 
 type TransportMaker func() http.RoundTripper
 
+// PacketUpMaxInFlight is how many packet-up upload requests of one session may
+// be in flight at the same time (BadVPN patch P5).
+//
+// Upstream mihomo waits for the response of every upload request before it
+// sends the next one, so upload speed is capped at sc-max-each-post-bytes per
+// round trip (0.9-1.5 Mbit/s measured with 64 KB requests behind a CDN that
+// needs 125-175 ms per request). Xray pipelines the requests: a new one starts
+// every sc-min-posts-interval-ms without waiting for the responses, and the
+// server puts them back in order by seq, buffering up to sc-max-buffered-posts
+// (default 30) of them.
+//
+// With the default interval of 30 ms, 8 requests in flight keep the pipeline
+// full up to a round trip of 240 ms, and never come close to the server buffer
+// of 30, even when the interval is 0.
+const PacketUpMaxInFlight = 8
+
+// packetUpMaxInFlightLimit keeps any configured value well below the default
+// sc-max-buffered-posts (30) of Xray and mihomo servers.
+const packetUpMaxInFlightLimit = 20
+
+// packetUpMaxInFlight is used by new packet-up sessions.
+var packetUpMaxInFlight atomic.Int32
+
+func init() { packetUpMaxInFlight.Store(PacketUpMaxInFlight) }
+
+// SetPacketUpMaxInFlightForTest changes how many upload requests new packet-up
+// sessions keep in flight (1 is the sequential behaviour of upstream mihomo)
+// and returns a function that restores the previous value. It is not a config
+// option: it exists for tests and measurements only.
+func SetPacketUpMaxInFlightForTest(n int) (restore func()) {
+	prev := packetUpMaxInFlight.Swap(int32(n))
+	return func() { packetUpMaxInFlight.Store(prev) }
+}
+
 type PacketUpWriter struct {
 	ctx                  context.Context
-	cancel               context.CancelFunc
+	cancel               context.CancelCauseFunc
 	cfg                  *Config
 	scMaxEachPostBytes   int
 	scMinPostsIntervalMs Range
@@ -52,6 +87,32 @@ type PacketUpWriter struct {
 	buf                  []byte
 	timer                *time.Timer
 	flushErr             error
+
+	inFlight chan struct{}  // one token per upload request in flight
+	uploads  sync.WaitGroup // upload goroutines
+}
+
+func newPacketUpWriter(parent context.Context, cfg *Config, scMaxEachPostBytes int, scMinPostsIntervalMs Range,
+	sessionID string, transport http.RoundTripper, maxInFlight int) *PacketUpWriter {
+	if maxInFlight < 1 {
+		maxInFlight = 1
+	}
+	if maxInFlight > packetUpMaxInFlightLimit {
+		maxInFlight = packetUpMaxInFlightLimit
+	}
+	ctx, cancel := context.WithCancelCause(parent)
+	writer := &PacketUpWriter{
+		ctx:                  ctx,
+		cancel:               cancel,
+		cfg:                  cfg,
+		scMaxEachPostBytes:   scMaxEachPostBytes,
+		scMinPostsIntervalMs: scMinPostsIntervalMs,
+		sessionID:            sessionID,
+		transport:            transport,
+		inFlight:             make(chan struct{}, maxInFlight),
+	}
+	writer.writeCond = sync.Cond{L: &writer.writeMu}
+	return writer
 }
 
 func (c *PacketUpWriter) Write(b []byte) (int, error) {
@@ -60,6 +121,9 @@ func (c *PacketUpWriter) Write(b []byte) (int, error) {
 
 	if err := c.flushErr; err != nil {
 		return 0, err
+	}
+	if c.ctx.Err() != nil { // an upload request failed or the writer is closed
+		return 0, context.Cause(c.ctx)
 	}
 
 	data := bytes.NewBuffer(b)
@@ -98,15 +162,50 @@ func (c *PacketUpWriter) flush() {
 	if len(c.buf) == 0 {
 		return
 	}
-	_, err := c.write(c.buf)
-	c.buf = c.buf[:0] // reset buffer
-	if err != nil {
+	data := c.buf
+	c.buf = nil // the upload goroutine owns data now
+	if err := c.send(data); err != nil {
 		c.flushErr = err
 		return
 	}
 }
 
-func (c *PacketUpWriter) write(b []byte) (int, error) {
+// send starts an upload request for b without waiting for its response. It
+// blocks while PacketUpMaxInFlight requests are in flight, which blocks Write,
+// so at most that many requests plus one buffer are held in memory.
+func (c *PacketUpWriter) send(b []byte) error {
+	select {
+	case c.inFlight <- struct{}{}:
+	case <-c.ctx.Done():
+		return context.Cause(c.ctx)
+	}
+
+	req, err := c.newRequest(b)
+	if err != nil {
+		<-c.inFlight
+		return err
+	}
+
+	// Requests may reach the server slightly out of order, like Xray's; the
+	// server puts them back in order by seq.
+	c.uploads.Add(1)
+	go c.upload(req)
+	return nil
+}
+
+func (c *PacketUpWriter) upload(req *http.Request) {
+	defer c.uploads.Done()
+	defer func() { <-c.inFlight }()
+
+	if err := c.roundTrip(req); err != nil {
+		// Any failed request breaks the stream: abort the other requests of
+		// this session and fail the next Write, like a failed request did
+		// before the requests were sent in parallel.
+		c.cancel(err)
+	}
+}
+
+func (c *PacketUpWriter) newRequest(b []byte) (*http.Request, error) {
 	u := url.URL{
 		Scheme: "https",
 		Host:   c.cfg.Host,
@@ -115,29 +214,31 @@ func (c *PacketUpWriter) write(b []byte) (int, error) {
 
 	req, err := http.NewRequestWithContext(c.ctx, c.cfg.GetNormalizedUplinkHTTPMethod(), u.String(), nil)
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
 
 	seqStr := strconv.FormatUint(c.seq, 10)
 	c.seq++
 
 	if err := c.cfg.FillPacketRequest(req, c.sessionID, seqStr, b); err != nil {
-		return 0, err
+		return nil, err
 	}
 	req.Host = c.cfg.Host
+	return req, nil
+}
 
+func (c *PacketUpWriter) roundTrip(req *http.Request) error {
 	resp, err := c.transport.RoundTrip(req)
 	if err != nil {
-		return 0, err
+		return err
 	}
 	defer resp.Body.Close()
 	_, _ = io.Copy(io.Discard, resp.Body)
 
 	if resp.StatusCode != http.StatusOK {
-		return 0, fmt.Errorf("xhttp packet-up bad status: %s", resp.Status)
+		return fmt.Errorf("xhttp packet-up bad status: %s", resp.Status)
 	}
-
-	return len(b), nil
+	return nil
 }
 
 func (c *PacketUpWriter) Close() error {
@@ -145,12 +246,17 @@ func (c *PacketUpWriter) Close() error {
 	go func() { // flush in the background
 		defer close(ch)
 		c.flush()
+		c.uploads.Wait() // let the requests in flight deliver the tail of the stream
 	}()
 	select {
 	case <-ch:
 	case <-time.After(time.Second):
 	}
-	c.cancel()
+	c.cancel(net.ErrClosed)
+	select { // requests in flight stop once their context is canceled
+	case <-ch:
+	case <-time.After(time.Second):
+	}
 	httputils.CloseTransport(c.transport)
 	return nil
 }
@@ -188,10 +294,13 @@ func NewTransport(dialRaw DialRawFunc, wrapTLS WrapTLSFunc, dialQUIC DialQUICFun
 			return wrapped, nil
 		}
 		return &http.Transport{
-			DialContext:       dialContext,
-			DialTLSContext:    dialContext,
-			IdleConnTimeout:   ConnIdleTimeout,
-			ForceAttemptHTTP2: false, // only http/1.1
+			DialContext:     dialContext,
+			DialTLSContext:  dialContext,
+			IdleConnTimeout: ConnIdleTimeout,
+			// packet-up keeps up to PacketUpMaxInFlight requests (one
+			// connection each) in flight; keep them for the next requests
+			MaxIdleConnsPerHost: PacketUpMaxInFlight,
+			ForceAttemptHTTP2:   false, // only http/1.1
 		}
 	}
 	if keepAlivePeriod == 0 {
@@ -592,18 +701,8 @@ func (c *Client) DialPacketUp(ctx context.Context) (net.Conn, error) {
 		Path:   downloadCfg.NormalizedPath(),
 	}
 
-	writerCtx, writerCancel := context.WithCancel(c.ctx)
-	writer := &PacketUpWriter{
-		ctx:                  writerCtx,
-		cancel:               writerCancel,
-		cfg:                  c.cfg,
-		scMaxEachPostBytes:   c.scMaxEachPostBytes.Rand(),
-		scMinPostsIntervalMs: c.scMinPostsIntervalMs,
-		sessionID:            sessionID,
-		transport:            uploadTransport,
-		seq:                  0,
-	}
-	writer.writeCond = sync.Cond{L: &writer.writeMu}
+	writer := newPacketUpWriter(c.ctx, c.cfg, c.scMaxEachPostBytes.Rand(), c.scMinPostsIntervalMs,
+		sessionID, uploadTransport, int(packetUpMaxInFlight.Load()))
 	conn := &Conn{writer: writer}
 
 	// Async download: avoid blocking on CDN response header buffering
