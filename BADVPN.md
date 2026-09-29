@@ -2,10 +2,11 @@
 
 Эта ветка (`bpn/<тег mihomo>`) — ядро mihomo для Android-клиента BadVPN. Это тег upstream [MetaCubeX/mihomo](https://github.com/MetaCubeX/mihomo) плюс небольшой набор патчей ниже. Больше ничего не меняется.
 
-*English summary: MetaCubeX/mihomo tag + a small patch set for REALITY compatibility with current Xray-core (client version 26.3.27, empty fingerprint → chrome, optional `reality-opts.client-version`; X25519MLKEM768 is stripped unless `reality-opts.support-x25519mlkem768: true`, as upstream) and metacubex/utls `v1.9.0-mod-meta` (Firefox 148 / Safari 26.3). Not affiliated with MetaCubeX; please do not report issues from this build upstream.*
+*English summary: MetaCubeX/mihomo tag + a small patch set for REALITY compatibility with current Xray-core (client version 26.3.27, empty fingerprint → chrome, optional `reality-opts.client-version`; X25519MLKEM768 is stripped unless `reality-opts.support-x25519mlkem768: true`, as upstream) and metacubex/utls `v1.9.0-mod-meta` (Firefox 148 / Safari 26.3). Branch `bpn/v1.19.31-xhttp-par` adds P5: XHTTP packet-up sends up to 8 upload requests in parallel (Xray-style pipelining) instead of one at a time. Not affiliated with MetaCubeX; please do not report issues from this build upstream.*
 
 - Upstream: `MetaCubeX/mihomo`, тег **v1.19.31** (`ab405bad`).
 - Ветка: `bpn/v1.19.31`. Коммиты патчей: `v1.19.31..bpn/v1.19.31`.
+- Ветка `bpn/v1.19.31-xhttp-par` = `bpn/v1.19.31` (`59790025`, P4) + **P5** (параллельная отправка в XHTTP packet-up). На проверке у VPN PANEL, в `bpn/v1.19.31` не влит.
 - Список патчей совпадает с реестром приложения `docs/core-patches.md` (AGENTS.md §11). ID те же. При изменении правятся оба файла.
 
 ## Патчи
@@ -16,8 +17,9 @@
 | **P2** | `github.com/metacubex/utls` v1.8.7 → голова ветки `v1.9.0-mod-meta` (`v0.0.0-20260924074610-04010625d68b`). Отпечатки: `firefox` Firefox 120 → **148**, `safari` Safari 16.0 → **26.3**, оба с X25519MLKEM768. `chrome` (133), `edge` (85), `ios` (14), `android` (OkHttp 11) не менялись. Кода mihomo правка не требует | Свежие отпечатки, те же, что у Xray ≥ 26.3.27. Без них `firefox` на Xray ≥ 26.9.8 не проходит даже с `support-x25519mlkem768: true` (в Firefox 120 нет ML-KEM). У BadVPN tcp+REALITY-хосты с `firefox`. Upstream ждёт релиза uTLS 1.9.0 ([#3193](https://github.com/MetaCubeX/mihomo/issues/3193)) | `go.mod`, `go.sum` | коммит `28e9ea26` (свой). Код utls: [metacubex/utls@v1.9.0-mod-meta](https://github.com/metacubex/utls/tree/v1.9.0-mod-meta) (wwqgtxx и др.), BSD-3-Clause | v1.19.31 | `TestBPNFingerprintVersions` (firefox = 148, safari = 26.3), `TestBPNRealityMLKEMKeyShare`, interop-матрица | Когда upstream mihomo поднимет utls до версии с Firefox 148 / Safari 26.3 |
 | **P3** | Необязательное поле `reality-opts.client-version: "x.y.z"` для каждого прокси. Версия по умолчанию задана в одном месте: `tlsC.DefaultRealityClientVersion` = 26.3.27. Значение `0.0.0` означает умолчание | Если на ноде задан `minClientVer` выше 26.3.27, версию можно поднять без пересборки ядра (через шаблон подписки) | `component/tls/reality.go`, `adapter/outbound/reality.go` + `*_bpn_test.go` | коммит `48d461ce` (свой, GPL-3.0 как mihomo). Идея — закрытый upstream [PR #3069](https://github.com/MetaCubeX/mihomo/pull/3069) | v1.19.31 | `TestBPNRealityDefaultClientVersion`, `TestBPNRealityClientVersionOverride`, `TestBPNParseRealityClientVersion`, `TestBPNRealityOptionsClientVersion` | Вместе с P1 |
 | **P4** | X25519MLKEM768 снова вырезается из ClientHello (supported groups и key share), если в `reality-opts` не задано `support-x25519mlkem768: true`. Это семантика upstream mihomo; P1 её убирал. Поле `RealityConfig.SupportX25519MLKEM768` возвращено | 28.09.2026: сборка приложения с P1+P2 без P4 (ML-KEM в ClientHello chrome/firefox/safari, 1529–1881 байт вместо 307–659) не подключалась ни к одной REALITY-ноде (Xray 26.3.27, tcp, без flow, реальные target без X25519MLKEM768 — nginx на OpenSSL 3.0 / внешний сайт). Та же сборка с вырезанием ML-KEM — работает. На локальном стенде поломка **не воспроизводится** (см. «Проверка»): старый код проходит и с target без ML-KEM (Go и `openssl s_server`), и при дроблении ClientHello на TCP-сегменты; логика ключей клиента совпадает с Xray-клиентом. Причина, вероятно, на пути до ноды, а не в ядре. Цена: Xray ≥ 26.9.8 без ML-KEM не пускает — для таких нод в подписке нужен `support-x25519mlkem768: true` | `component/tls/reality.go`, `adapter/outbound/reality.go`; тесты `component/tls/reality_bpn_test.go`, `component/tls/reality_test.go`, `adapter/outbound/reality_bpn_test.go`, `listener/inbound/bpn_reality_xray_matrix_test.go`, `listener/inbound/vless_xray_reality_interop_test.go` | коммит `fix(reality): strip X25519MLKEM768 unless support-x25519mlkem768 (P4)` (свой, GPL-3.0 как mihomo); код — возврат upstream | v1.19.31 | `TestBPNRealityMLKEMKeyShare` (по умолчанию ML-KEM нет, с опцией — есть и стоит до X25519), `TestRealityChromeClientHelloPreservesFingerprint` (с опцией отпечаток не меняется), `TestBPNRealityOptionsSupportX25519MLKEM768`, interop-матрица; проверка на телефоне по всем типам нод | Вместе с P1 (без P1 это просто код upstream). Умолчание можно перевернуть, когда причина полевой поломки будет найдена и устранена, а ноды перейдут на Xray ≥ 26.9.8 |
+| **P5** | XHTTP `packet-up`: запросы отправки (POST или `uplink-http-method: GET` с данными в заголовках `X-Payload-N`) идут параллельно, до **8** одновременно на сессию (`xhttp.PacketUpMaxInFlight`; предел в коде — 20), а не строго по одному с ожиданием ответа. `seq` — в порядке отправки; между началами запросов — не меньше `sc-min-posts-interval-ms`; `Write` блокируется, пока 8 запросов в пути (в памяти не больше 8 запросов + один буфер до `sc-max-each-post-bytes`); ошибка любого запроса отменяет остальные и рвёт сессию, как раньше. `stream-up` / `stream-one` не менялись. Для `alpn: [http/1.1]` у транспорта `MaxIdleConnsPerHost` = 8 (каждый запрос в пути — отдельное соединение). Настройки в конфиге нет: у Xray-клиента аналога нет (он число запросов вообще не ограничивает), поэтому константа | Линии через CDN, где не проходит POST (GET + заголовки): один запрос через CDN ~125–175 мс, отправка упиралась в размер запроса / RTT — 0,9–1,5 Мбит/с при 64 КБ. Xray шлёт запросы конвейером (пауза `scMinPostsIntervalMs` между началами, без ожидания ответов), сервер собирает по `seq` и держит до `scMaxBufferedPosts` (30). Почему 8: при 30 мс между запросами конвейер полон до RTT 240 мс; потолок 8 × 64 КБ / RTT (≈ 28 Мбит/с при 150 мс) выше потолка самого интервала (64 КБ / 30 мс ≈ 17 Мбит/с); 8 далеко от 30 даже при интервале 0 | `transport/xhttp/client.go`; тесты `transport/xhttp/packet_up_bpn_test.go`, `listener/inbound/bpn_xhttp_xray_interop_test.go` | коммит `69e5e055` (`feat(xhttp): send packet-up uploads in parallel, up to 8 in flight (P5)`) (свой, GPL-3.0 как mihomo); поведение — как у Xray `transport/internet/splithttp/dialer.go` | v1.19.31 | `TestBPNPacketUp*` (фейковый сервер с задержкой ответов; h2 и h1; POST и GET): (a) в пути ровно N и не больше, N = 1 — старое поведение; (b) `seq` без пропусков и повторов, поток собирается при ответах не по порядку (sha256); (c) ошибка → остальные запросы отменены, `Write` возвращает ошибку; (d) интервал между началами ≥ `sc-min-posts-interval-ms`; (e) после `Close` нет горутин `PacketUpWriter`, в том числе если запросы зависли и `Write` заблокирован; эхо через весь клиент и сервер mihomo. Interop с Xray 26.3.27 / 26.7.28 / 26.9.9: `TestBPNXHTTPPacketUpXrayInterop` (см. «Проверка»). На реальных линиях через CDN — ожидает (VPN PANEL) | Когда upstream mihomo сам станет слать запросы packet-up конвейером / параллельно, как Xray |
 
-Только тесты, поведение не меняют: `ad4c3f42` — `listener/inbound/bpn_reality_xray_matrix_test.go`.
+Только тесты, поведение не меняют: `ad4c3f42` — `listener/inbound/bpn_reality_xray_matrix_test.go`; `672fea5d` (ветка `bpn/v1.19.31-xhttp-par`) — `listener/inbound/bpn_xhttp_xray_interop_test.go`.
 
 ### Важно для потребителя: версия utls (P2)
 
@@ -67,6 +69,29 @@ Upstream v1.19.31 (utls v1.8.7), замер до P4 — только target с M
 | upstream v1.19.31: пустой fingerprint | fail («please set a client-fingerprint») | fail | fail |
 | upstream v1.19.31: edge | ok | fail | fail |
 
+### P5: XHTTP packet-up, параллельная отправка
+
+```sh
+go test ./transport/xhttp/ -run BPNPacketUp -v -count=1     # фейковый сервер с задержкой ответов, ~20 с
+XRAY_BINARY=/path/to/xray go test ./listener/inbound -run BPNXHTTPPacketUpXrayInterop -v -count=1   # ~1,5 мин
+```
+
+`TestBPNXHTTPPacketUpXrayInterop`: локальный Xray (VLESS + XHTTP `packet-up`, TLS, `alpn` h2 и http/1.1), отправка POST и `GET` с данными в `X-Payload-N` (`uplink-chunk-size: 8192-12288`, на сервере `serverMaxHeaderBytes: 131072` — у Xray по умолчанию 8192, 64 КБ данных в заголовках не пролезут). В подписке как у линий через CDN: `sc-max-each-post-bytes: 32768-65536`, `sc-min-posts-interval-ms: 30`. Без задержки — 16 МиБ туда и 16 МиБ обратно с проверкой sha256; затем через прокси с задержкой 75 мс в каждую сторону (RTT 150 мс, без ограничения полосы) — отправка 2 МиБ при N = 1 (как upstream) и N = 8, sha256 в обе стороны.
+
+Результат на `bpn/v1.19.31-xhttp-par` (29.09.2026, Windows amd64), отправка при RTT 150 мс, Мбит/с, N = 1 → N = 8:
+
+| Отправка | Xray 26.3.27 | Xray 26.7.28 | Xray 26.9.9 |
+|---|---|---|---|
+| POST, h2 | 2,3 → 12,3 | 2,3 → 11,8 | 2,1–3,2 → 9,1–10,6 |
+| GET + заголовки, h2 | 1,8 → 12,9 | 2,7 → 12,8 | 2,0–3,0 → 7,4–9,9 |
+| POST, h1 | 1,8 → 13,8 | 2,9 → 12,0 | 3,0 → 11,5–12,5 |
+| GET + заголовки, h1 | 2,4 → 11,5 | 2,2 → 8,9 | 2,6–3,0 → 5,4–11,3 |
+
+- Все 16 МиБ-прогоны и все sha256 — ok на всех трёх версиях Xray. Приём (download) от N не зависит (100–160 Мбит/с через прокси).
+- С N = 8 отправка упирается уже не в RTT, а в `sc-min-posts-interval-ms`: не больше одного запроса за 30 мс, то есть ~48 КБ (среднее 32–64 КБ) / 30 мс ≈ 13 Мбит/с; при RTT 150 мс в пути 5–6 запросов, до 8 не доходит. То же ограничение у Xray-клиента. Больше — только уменьшив интервал в подписке (потолок тогда 8 × размер запроса / RTT).
+- h1: каждый запрос в пути — своё TLS-соединение (2–3 RTT на установку), поэтому на коротком замере разброс больше.
+- Фейковый сервер (`TestBPNPacketUpThroughput`, ответ через 150 мс, запросы по 64 КБ, интервал 30 мс): 3,4 → 13,1 Мбит/с.
+
 ## Перенос на новый тег mihomo
 
 Каждому тегу — своя ветка `bpn/<тег>`. Старые ветки не переписываем и не форсим: приложение ссылается на конкретный коммит.
@@ -95,7 +120,7 @@ Submodule `core/src/foss/golang/clash` в [Rerowros/bpnclash](https://github.com
 2. `cd core/src/foss/golang/clash && git fetch origin bpn/v1.19.31 && git checkout <коммит>`. Коммит на ветке `bpn/<тег>`, в приложении фиксируется хеш.
 3. В `core/src/main/golang/go.mod` и `core/src/foss/golang/go.mod` добавить `replace` для utls (см. выше), выполнить `go mod tidy` в обоих, проверить `go list -m github.com/metacubex/utls`.
 4. Очистить `core/build`: golang-таск не видит изменений submodule, иначе останется старая `libclash.so`. Собрать `assembleAlphaDebug` и проверить на телефоне все типы нод.
-5. Перенести P1–P4 в `docs/core-patches.md` в «Действующие» с хешами этой ветки.
+5. Перенести P1–P4 (и P5, если принят) в `docs/core-patches.md` в «Действующие» с хешами этой ветки.
 
 ## Лицензии и атрибуция
 
