@@ -4,9 +4,10 @@
 
 *English summary: MetaCubeX/mihomo tag + a small patch set for REALITY compatibility with current Xray-core (client version 26.3.27, empty fingerprint → chrome, optional `reality-opts.client-version`; X25519MLKEM768 is stripped unless `reality-opts.support-x25519mlkem768: true`, as upstream) and metacubex/utls `v1.9.0-mod-meta` (Firefox 148 / Safari 26.3). Branch `bpn/v1.19.31-xhttp-par` adds P5: XHTTP packet-up sends up to 8 upload requests in parallel (Xray-style pipelining) instead of one at a time. Not affiliated with MetaCubeX; please do not report issues from this build upstream.*
 
-- Upstream: `MetaCubeX/mihomo`, тег **v1.19.31** (`ab405bad`).
-- Ветка: `bpn/v1.19.31`. Коммиты патчей: `v1.19.31..bpn/v1.19.31`.
-- Ветка `bpn/v1.19.31-xhttp-par` = `bpn/v1.19.31` (`59790025`, P4) + **P5** (параллельная отправка в XHTTP packet-up). На проверке у VPN PANEL, в `bpn/v1.19.31` не влит.
+- Upstream: `MetaCubeX/mihomo`, тег **v1.19.32** (`88dcbf7f`). В нём новый TUN-стек `mips` (стек самого mihomo, теперь умолчание upstream) и `tun.congestion-controller` (cubic / reno / bbr / bbr3, только для `mips`).
+- Ветка: `bpn/v1.19.32` = `bpn/v1.19.31` (`9b11ffbd`, P1–P5), перенесённая `git rebase --onto v1.19.32 v1.19.31` 02.10.2026. Коммиты патчей: `v1.19.32..bpn/v1.19.32`. Хеши в таблице ниже — исходные, с `bpn/v1.19.31`.
+- При переносе: upstream поднял utls до v1.8.8 (Firefox 120 / Safari 16.0, как раньше), поэтому P2 остаётся — голова `v1.9.0-mod-meta` теперь `78c9290b` (`v0.0.0-20260930132604-78c9290bf587`, сверху та же правка HWCap, что в v1.8.8).
+- Старые ветки `bpn/v1.19.31` и `bpn/v1.19.31-xhttp-par` не меняются.
 - Список патчей совпадает с реестром приложения `docs/core-patches.md` (AGENTS.md §11). ID те же. При изменении правятся оба файла.
 
 ## Патчи
@@ -26,7 +27,7 @@
 Псевдоверсия `v0.0.0-2026…` по semver **меньше** `v1.8.7`. Если в главном модуле сборки (у приложения это `core/src/main/golang` и `core/src/foss/golang`) остаётся `github.com/metacubex/utls v1.8.7`, Go MVS молча выберет v1.8.7, и P2 не применится. Главный модуль должен закрепить версию:
 
 ```
-replace github.com/metacubex/utls => github.com/metacubex/utls v0.0.0-20260924074610-04010625d68b
+replace github.com/metacubex/utls => github.com/metacubex/utls v0.0.0-20260930132604-78c9290bf587
 ```
 
 `replace` в `go.mod` самого mihomo на главный модуль не действует. Проверка: `go list -m github.com/metacubex/utls` в модуле приложения должен показать псевдоверсию.
