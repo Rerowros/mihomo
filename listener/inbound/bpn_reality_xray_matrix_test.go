@@ -18,6 +18,7 @@ import (
 
 	"github.com/metacubex/mihomo/adapter/outbound"
 	"github.com/metacubex/mihomo/component/ca"
+	tlsC "github.com/metacubex/mihomo/component/tls"
 
 	"github.com/metacubex/tls"
 	"github.com/stretchr/testify/require"
@@ -37,11 +38,14 @@ const (
 //
 //	XRAY_BINARY=/path/to/xray [OPENSSL_BINARY=/path/to/openssl] go test ./listener/inbound -run BPNRealityXrayMatrix -v
 //
-// Every case logs a "MATRIX" line. See BADVPN.md (P4) for the results.
-// Required: default (ML-KEM stripped) chrome/firefox/safari/empty on Xray
-// < 26.9.8 with every target. Informational: everything on Xray >= 26.9.8
-// (XTLS/REALITY 8cdf7bf rejects ClientHellos without X25519MLKEM768), edge
-// (Edge 85, no ML-KEM) and support-x25519mlkem768: true.
+// Every case logs a "MATRIX" line. See BADVPN.md (P4, P6) for the results.
+// Default cases (no support-x25519mlkem768) start from an empty P6 memo and
+// get two connections: classic first, ML-KEM after a failure. Required:
+// default chrome/firefox/safari/empty with every target on every Xray — on
+// the first connection below 26.9.8, by the second one on Xray >= 26.9.8
+// (XTLS/REALITY 8cdf7bf rejects ClientHellos without X25519MLKEM768).
+// Informational: edge (Edge 85, no ML-KEM; P6 swaps it for chrome when the
+// memo wants ML-KEM) and support-x25519mlkem768: true.
 func TestBPNRealityXrayMatrix(t *testing.T) {
 	xrayBinary := os.Getenv("XRAY_BINARY")
 	if xrayBinary == "" {
@@ -125,17 +129,32 @@ func TestBPNRealityXrayMatrix(t *testing.T) {
 							SupportX25519MLKEM768: testCase.mlkem,
 						},
 					})
+					tlsC.ResetRealityMLKEMMemo()
+					attempts := 0
 					if err == nil {
 						t.Cleanup(func() { _ = out.Close() })
-						err = bpnMatrixRoundTrip(out, echoAddr, t)
+						maxAttempts := 1
+						if !testCase.mlkem {
+							maxAttempts = 2
+						}
+						for attempts < maxAttempts {
+							attempts++
+							if err = bpnMatrixRoundTrip(out, echoAddr, t); err == nil {
+								break
+							}
+						}
 					}
-					result := "ok"
+					result := fmt.Sprintf("ok (attempt %d)", attempts)
 					if err != nil {
-						result = "fail: " + err.Error()
+						result = fmt.Sprintf("fail after %d: %v", attempts, err)
 					}
 					t.Logf("MATRIX xray=%s %s fp=%s -> %s", xrayVersion, target.name, name, result)
-					if err != nil && !testCase.informational && !xrayRequiresMLKEM {
-						t.Error(err)
+					if !testCase.informational {
+						if err != nil {
+							t.Error(err)
+						} else if attempts > 1 && !xrayRequiresMLKEM {
+							t.Errorf("needed %d connections on Xray < 26.9.8, want the classic first one", attempts)
+						}
 					}
 				})
 			}

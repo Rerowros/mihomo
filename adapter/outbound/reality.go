@@ -14,10 +14,10 @@ type RealityOptions struct {
 	PublicKey string `proxy:"public-key"`
 	ShortID   string `proxy:"short-id,omitempty"`
 
-	// BadVPN P4: X25519MLKEM768 is stripped from the ClientHello unless this is
-	// true (upstream semantics). Real Xray 26.3.27 nodes with targets without
-	// ML-KEM failed with it in the field (BADVPN.md, P4). Xray >= 26.9.8 nodes
-	// need true.
+	// BadVPN P4/P6: true always offers X25519MLKEM768. Without it the first
+	// handshake to a server is classic (P4: real Xray 26.3.27 nodes failed with
+	// ML-KEM in the field, BADVPN.md) and the core learns per server whether it
+	// needs ML-KEM (Xray >= 26.9.8) from the handshake outcome (P6).
 	SupportX25519MLKEM768 bool `proxy:"support-x25519mlkem768,omitempty"`
 
 	// ClientVersion overrides the "x.y.z" version reported to the server
