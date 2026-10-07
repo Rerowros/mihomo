@@ -17,6 +17,7 @@ import (
 	"net"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/metacubex/mihomo/log"
@@ -67,7 +68,103 @@ type RealityConfig struct {
 	ClientVersion RealityClientVersion
 }
 
+// BadVPN P6: adaptive X25519MLKEM768. Xray servers are split by generation:
+// builds before 2025 drop a ClientHello with the hybrid key share, builds from
+// 26.9.8 on (XTLS/REALITY 8cdf7bf) reject one without it, and a server never
+// says which it is. Without support-x25519mlkem768 the outcome of each
+// handshake is remembered per server address and public key: classic first
+// (P4 behaviour), flip after one failure, pin after one success, flip a pinned
+// verdict again after realityMemoFlipAfter failures in a row (servers get
+// upgraded). A wrong guess costs one failed connection per server.
+// Adapted from the ClashFest core patch 0002 (Nemu-x, GPL-3.0).
+type realityMemoEntry struct {
+	mlkem    bool
+	pinned   bool
+	failures int
+	flips    int
+}
+
+const realityMemoFlipAfter = 3
+
+var realityMemo = struct {
+	sync.Mutex
+	entries map[string]*realityMemoEntry
+}{entries: map[string]*realityMemoEntry{}}
+
+func realityMemoKey(conn net.Conn, config *RealityConfig) string {
+	key := string(config.PublicKey.Bytes())
+	if addr := conn.RemoteAddr(); addr != nil {
+		key = addr.String() + "|" + key
+	}
+	return key
+}
+
+// realityChooseMLKEM returns whether this handshake offers X25519MLKEM768 and
+// whether the choice came from the memo (and so must be reported back).
+func realityChooseMLKEM(key string, config *RealityConfig) (mlkem bool, adaptive bool) {
+	if config.SupportX25519MLKEM768 {
+		return true, false
+	}
+	realityMemo.Lock()
+	defer realityMemo.Unlock()
+	if entry, ok := realityMemo.entries[key]; ok {
+		return entry.mlkem, true
+	}
+	return false, true
+}
+
+func realityReportMLKEM(key string, mlkem bool, ok bool, remote net.Addr) {
+	realityMemo.Lock()
+	defer realityMemo.Unlock()
+	entry := realityMemo.entries[key]
+	if entry == nil {
+		entry = &realityMemoEntry{mlkem: mlkem}
+		realityMemo.entries[key] = entry
+	}
+	if ok {
+		if !entry.pinned || entry.mlkem != mlkem {
+			log.Infoln("REALITY %v: X25519MLKEM768=%v confirmed", remote, mlkem)
+		}
+		entry.mlkem, entry.pinned, entry.failures, entry.flips = mlkem, true, 0, 0
+		return
+	}
+	if entry.mlkem != mlkem {
+		return // a stale attempt; the memo already moved on
+	}
+	entry.failures++
+	if !entry.pinned || entry.failures >= realityMemoFlipAfter {
+		entry.mlkem, entry.pinned, entry.failures = !mlkem, false, 0
+		entry.flips++
+		// A server that rejects both is down or misconfigured: keep flipping
+		// (it may come back) but stop narrating it after two rounds.
+		if entry.flips <= 2 {
+			log.Infoln("REALITY %v: handshake with X25519MLKEM768=%v failed, next attempt uses %v", remote, mlkem, !mlkem)
+		} else {
+			log.Debugln("REALITY %v: handshake with X25519MLKEM768=%v failed again, next attempt uses %v", remote, mlkem, !mlkem)
+		}
+	}
+}
+
+func realityHasMLKEMShare(uConn *utls.UConn) bool {
+	keys := uConn.HandshakeState.State13.KeyShareKeys
+	return keys != nil && keys.MlkemEcdhe != nil
+}
+
+// ResetRealityMLKEMMemo forgets every learned verdict (tests).
+func ResetRealityMLKEMMemo() {
+	realityMemo.Lock()
+	defer realityMemo.Unlock()
+	realityMemo.entries = map[string]*realityMemoEntry{}
+}
+
 func GetRealityConn(ctx context.Context, conn net.Conn, fingerprint UClientHelloID, serverName string, realityConfig *RealityConfig) (net.Conn, error) {
+	memoKey := realityMemoKey(conn, realityConfig)
+	useMLKEM, adaptive := realityChooseMLKEM(memoKey, realityConfig)
+	report := func(ok bool) {
+		if adaptive {
+			realityReportMLKEM(memoKey, useMLKEM, ok, conn.RemoteAddr())
+		}
+	}
 	for retry := 0; ; retry++ {
 		verifier := &realityVerifier{
 			serverName: serverName,
@@ -87,7 +184,17 @@ func GetRealityConn(ctx context.Context, conn net.Conn, fingerprint UClientHello
 			return nil, err
 		}
 
-		if !realityConfig.SupportX25519MLKEM768 { // BadVPN P4: see adapter/outbound/reality.go
+		// P6: the memo wants the hybrid share but this fingerprint has none
+		// (edge, ios, android, chrome120...): chrome is the only hello that can
+		// still reach that server. An explicit support-x25519mlkem768 keeps the
+		// configured fingerprint, as before.
+		if useMLKEM && adaptive && !realityHasMLKEMShare(uConn) && fingerprint.Client != utls.HelloChrome_Auto.Client {
+			log.Debugln("REALITY %v: %s fingerprint has no X25519MLKEM768 key share, using chrome", conn.RemoteAddr(), fingerprint.Client)
+			fingerprint = utls.HelloChrome_Auto
+			continue
+		}
+
+		if !useMLKEM { // BadVPN P4/P6: see adapter/outbound/reality.go
 			err = BuildRemovedX25519MLKEM768HandshakeState(uConn)
 			if err != nil {
 				return nil, err
@@ -151,16 +258,19 @@ func GetRealityConn(ctx context.Context, conn net.Conn, fingerprint UClientHello
 
 		err = uConn.HandshakeContext(ctx)
 		if err != nil {
+			report(false)
 			return nil, err
 		}
 
 		log.Debugln("REALITY Authentication: %v, AEAD: %T", verifier.verified, aeadCipher)
 
 		if !verifier.verified {
+			report(false)
 			go realityClientFallback(uConn, uConfig.ServerName, fingerprint)
 			return nil, errors.New("REALITY authentication failed")
 		}
 
+		report(true)
 		return uConn, nil
 	}
 }
