@@ -7,6 +7,7 @@ import (
 	"encoding/binary"
 	"io"
 	"net"
+	"sync/atomic"
 
 	"github.com/metacubex/mihomo/common/utils"
 	"github.com/metacubex/mihomo/transport/vless"
@@ -23,10 +24,16 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
+// userTable is published as one immutable snapshot, so a runtime user update
+// never races with a handshake that is reading the table.
+type userTable[T comparable] struct {
+	byUUID map[[16]byte]T
+	flow   map[T]string
+}
+
 type Service[T comparable] struct {
-	userMap  map[[16]byte]T
-	userFlow map[T]string
-	handler  Handler
+	users   atomic.Pointer[userTable[T]]
+	handler Handler
 }
 
 type Handler interface {
@@ -36,9 +43,14 @@ type Handler interface {
 }
 
 func NewService[T comparable](handler Handler) *Service[T] {
-	return &Service[T]{
+	s := &Service[T]{
 		handler: handler,
 	}
+	s.users.Store(&userTable[T]{
+		byUUID: make(map[[16]byte]T),
+		flow:   make(map[T]string),
+	})
+	return s
 }
 
 func (s *Service[T]) UpdateUsers(userList []T, userUUIDList []string, userFlowList []string) {
@@ -49,8 +61,7 @@ func (s *Service[T]) UpdateUsers(userList []T, userUUIDList []string, userFlowLi
 		userMap[userID] = userName
 		userFlowMap[userName] = userFlowList[i]
 	}
-	s.userMap = userMap
-	s.userFlow = userFlowMap
+	s.users.Store(&userTable[T]{byUUID: userMap, flow: userFlowMap})
 }
 
 var _ N.TCPConnectionHandler = (*Service[int])(nil)
@@ -105,14 +116,15 @@ func (s *Service[T]) NewConnection(ctx context.Context, conn net.Conn, metadata 
 		}
 	}
 
-	user, loaded := s.userMap[requestUUID]
+	table := s.users.Load()
+	user, loaded := table.byUUID[requestUUID]
 	if !loaded {
 		return E.New("unknown UUID: ", uuid.FromBytesOrNil(requestUUID[:]))
 	}
 	ctx = auth.ContextWithUser(ctx, user)
 	metadata.Destination = destination
 
-	userFlow := s.userFlow[user]
+	userFlow := table.flow[user]
 	requestFlow := addons.Flow
 	if requestFlow != userFlow && requestFlow != "" {
 		return E.New("flow mismatch: expected ", flowName(userFlow), ", but got ", flowName(requestFlow))

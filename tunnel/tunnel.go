@@ -431,6 +431,14 @@ func handleUDPConn(packet C.PacketAdapter) {
 	}
 	fixMetadata(metadata) // fix some metadata not set via metadata.SetRemoteAddr or metadata.SetRemoteAddress
 
+	if key, ok := statistic.UserKeyOf(metadata); ok {
+		if err := statistic.DefaultLimitManager.Admit(key); err != nil {
+			packet.Drop()
+			log.Warnln("[Limit] inbound user %s/%s: %s", key.Inbound, key.User, err)
+			return
+		}
+	}
+
 	if err := preHandleMetadata(metadata.Clone()); err != nil { // precheck without modify metadata
 		packet.Drop()
 		log.Debugln("[Metadata PreHandle] error: %s", err)
@@ -515,6 +523,13 @@ func handleTCPConn(connCtx C.ConnContext) {
 		return
 	}
 	fixMetadata(metadata) // fix some metadata not set via metadata.SetRemoteAddr or metadata.SetRemoteAddress
+
+	if key, ok := statistic.UserKeyOf(metadata); ok {
+		if err := statistic.DefaultLimitManager.Admit(key); err != nil {
+			log.Warnln("[Limit] inbound user %s/%s: %s", key.Inbound, key.User, err)
+			return
+		}
+	}
 
 	preHandleFailed := false
 	if err := preHandleMetadata(metadata); err != nil {

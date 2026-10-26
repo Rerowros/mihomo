@@ -7,6 +7,9 @@ import (
 	LC "github.com/metacubex/mihomo/listener/config"
 	"github.com/metacubex/mihomo/listener/sing_vless"
 	"github.com/metacubex/mihomo/log"
+	"github.com/metacubex/mihomo/transport/vless"
+
+	"github.com/gofrs/uuid/v5"
 )
 
 type VlessOption struct {
@@ -93,6 +96,7 @@ type Vless struct {
 	*Base
 	config *VlessOption
 	l      C.MultiAddrListener
+	svc    *sing_vless.Listener
 	vs     LC.VlessServer
 }
 
@@ -154,11 +158,68 @@ func (v *Vless) Address() string {
 // Listen implements constant.InboundListener
 func (v *Vless) Listen(tunnel C.Tunnel) error {
 	var err error
-	v.l, err = sing_vless.New(v.vs, v.ListenConfig(), tunnel, v.Additions()...)
+	v.svc, err = sing_vless.New(v.vs, v.ListenConfig(), tunnel, v.Additions()...)
 	if err != nil {
 		return err
 	}
+	v.l = v.svc
 	log.Infoln("Vless[%s] proxy listening at: %s", v.Name(), v.Address())
+	return nil
+}
+
+// GetUsers implements constant.InboundUserManager.
+func (v *Vless) GetUsers() []C.InboundUser {
+	var users []LC.VlessUser
+	if v.svc != nil {
+		users = v.svc.Users()
+	} else {
+		users = v.vs.Users
+	}
+	result := make([]C.InboundUser, 0, len(users))
+	for _, user := range users {
+		result = append(result, C.InboundUser{
+			Username: user.Username,
+			UUID:     user.UUID,
+			Flow:     user.Flow,
+		})
+	}
+	return result
+}
+
+// SetUsers implements constant.InboundUserManager: the new table takes effect
+// for the next handshake without restarting the listener.
+func (v *Vless) SetUsers(users []C.InboundUser) error {
+	if v.svc == nil {
+		return C.ErrInboundNotFound
+	}
+	converted := make([]LC.VlessUser, 0, len(users))
+	seenNames := make(map[string]struct{}, len(users))
+	seenUUIDs := make(map[string]struct{}, len(users))
+	for _, user := range users {
+		if user.Username == "" || user.UUID == "" {
+			return C.ErrInvalidInboundUser
+		}
+		if _, err := uuid.FromString(user.UUID); err != nil {
+			return C.ErrInvalidInboundUser
+		}
+		if user.Flow != "" && user.Flow != vless.XRV {
+			return C.ErrInvalidInboundUser
+		}
+		if _, ok := seenNames[user.Username]; ok {
+			return C.ErrInvalidInboundUser
+		}
+		if _, ok := seenUUIDs[user.UUID]; ok {
+			return C.ErrInvalidInboundUser
+		}
+		seenNames[user.Username] = struct{}{}
+		seenUUIDs[user.UUID] = struct{}{}
+		converted = append(converted, LC.VlessUser{
+			Username: user.Username,
+			UUID:     user.UUID,
+			Flow:     user.Flow,
+		})
+	}
+	v.svc.UpdateUsers(converted)
 	return nil
 }
 
