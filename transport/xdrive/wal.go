@@ -47,10 +47,11 @@ type walWriter struct {
 	storage Storage
 	prefix  string
 	params
-	sem chan struct{}
-	wg  sync.WaitGroup
+	wg sync.WaitGroup
 
 	mu       sync.Mutex
+	condSlot sync.Cond
+	inflight int
 	buf      []byte
 	seq      int64
 	lastSize int
@@ -65,8 +66,8 @@ func newWALWriter(ctx context.Context, storage Storage, prefix string, p params)
 		storage: storage,
 		prefix:  prefix,
 		params:  p,
-		sem:     make(chan struct{}, p.concurrency),
 	}
+	w.condSlot = sync.Cond{L: &w.mu}
 	go w.flushLoop()
 	return w
 }
@@ -136,6 +137,15 @@ func (w *walWriter) flushLocked() error {
 		return w.err
 	}
 
+	// Bound the segments in flight: every one holds a copy of its data until
+	// the storage accepts it. Without this, a fast reader and a slow cloud
+	// folder grow memory without limit. Wait with w.mu released; upload()
+	// takes the same mutex to publish an error.
+	w.acquireSlotLocked()
+	if w.err != nil {
+		return w.err
+	}
+
 	n := len(w.buf)
 	if n > w.segmentBytes {
 		n = w.segmentBytes
@@ -154,20 +164,32 @@ func (w *walWriter) flushLocked() error {
 	w.lastSize = len(w.buf)
 	w.held = 0
 
+	w.inflight++
 	w.wg.Add(1)
 	go w.upload(seq, chunk)
 	return nil
 }
 
+// acquireSlotLocked waits until fewer than concurrency segments are in flight.
+// The caller holds w.mu; Wait releases it, so upload() can publish its result.
+func (w *walWriter) acquireSlotLocked() {
+	limit := w.concurrency
+	if limit <= 0 {
+		limit = 1
+	}
+	for w.inflight >= limit && w.err == nil {
+		w.condSlot.Wait()
+	}
+}
+
 func (w *walWriter) upload(seq int64, chunk []byte) {
 	defer w.wg.Done()
-
-	select {
-	case w.sem <- struct{}{}:
-	case <-w.ctx.Done():
-		return
-	}
-	defer func() { <-w.sem }()
+	defer func() {
+		w.mu.Lock()
+		w.inflight--
+		w.condSlot.Broadcast()
+		w.mu.Unlock()
+	}()
 
 	if err := w.storage.Put(w.ctx, objectName(w.prefix, seq, segSuffix), chunk); err != nil {
 		w.mu.Lock()

@@ -269,6 +269,9 @@ func New(config LC.VlessServer, lc C.InboundListenConfig, tunnel C.Tunnel, addit
 		if len(securityModes) > 0 {
 			return nil, errors.New("xdrive transport gets transport security from the storage service; remove certificate/shadow-tls/res-tls/jls/reality: " + strings.Join(securityModes, ", "))
 		}
+		if sl.decryption == nil && !config.AllowInsecure {
+			return nil, errors.New("xdrive carries VLESS over the cloud folder without TLS; set decryption or allow-insecure")
+		}
 		sl.xdrive, err = xdrive.Listen(&xdrive.Config{
 			Service:         config.XDriveConfig.Service,
 			RemoteFolder:    config.XDriveConfig.RemoteFolder,
