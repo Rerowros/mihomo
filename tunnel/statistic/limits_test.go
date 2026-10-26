@@ -93,6 +93,27 @@ func TestLimitManagerUpdatesRate(t *testing.T) {
 	}
 }
 
+func TestRateLimiterSetRateWakesWaiters(t *testing.T) {
+	limiter := newRateLimiter(1)
+	done := make(chan struct{})
+	go func() {
+		limiter.wait(1000)
+		close(done)
+	}()
+	time.Sleep(20 * time.Millisecond)
+
+	start := time.Now()
+	limiter.setRate(0)
+	if elapsed := time.Since(start); elapsed > 100*time.Millisecond {
+		t.Fatalf("setRate blocked for %v", elapsed)
+	}
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("wait did not wake after setRate")
+	}
+}
+
 func TestRateLimiterUnlimited(t *testing.T) {
 	var limiter *rateLimiter
 	start := time.Now()

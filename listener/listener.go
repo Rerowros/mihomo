@@ -718,6 +718,8 @@ func GetInboundUsers(name string) ([]C.InboundUser, error) {
 // SetInboundUsers replaces the runtime user table of an inbound. The listener
 // stays up: the new table is used by the next handshake.
 func SetInboundUsers(name string, users []C.InboundUser) error {
+	inboundUsersUpdateMu.Lock()
+	defer inboundUsersUpdateMu.Unlock()
 	inboundMux.RLock()
 	defer inboundMux.RUnlock()
 	listener, ok := inboundListeners[name]

@@ -36,23 +36,26 @@ type UserLimitStatus struct {
 }
 
 type rateLimiter struct {
-	rate   float64
-	burst  float64
-	tokens float64
-	last   time.Time
-	mu     sync.Mutex
+	rate    float64
+	burst   float64
+	tokens  float64
+	last    time.Time
+	mu      sync.Mutex
+	changed chan struct{}
 }
 
-// wait blocks until n bytes may pass. A zero rate means unlimited. The
-// limiter is held while waiting, so several connections of one user share the
-// rate instead of each sleeping in parallel and overshooting it.
+// wait blocks until n bytes may pass. A zero rate means unlimited. Only the
+// token accounting is under the lock; the sleep is outside it, so changing or
+// removing a limit never waits for a throttled connection. Tokens are reserved
+// before sleeping, which keeps several connections of one user on the shared
+// rate.
 func (l *rateLimiter) wait(n int) {
 	if l == nil || n <= 0 {
 		return
 	}
 	l.mu.Lock()
-	defer l.mu.Unlock()
 	if l.rate <= 0 {
+		l.mu.Unlock()
 		return
 	}
 	now := time.Now()
@@ -68,12 +71,20 @@ func (l *rateLimiter) wait(n int) {
 	need := float64(n)
 	if l.tokens >= need {
 		l.tokens -= need
+		l.mu.Unlock()
 		return
 	}
 	wait := (need - l.tokens) / l.rate
-	l.tokens = 0
-	time.Sleep(time.Duration(wait * float64(time.Second)))
-	l.last = time.Now()
+	l.tokens -= need
+	changed := l.changed
+	l.mu.Unlock()
+
+	timer := time.NewTimer(time.Duration(wait * float64(time.Second)))
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+	case <-changed:
+	}
 }
 
 type limitState struct {
@@ -116,7 +127,7 @@ func (m *LimitManager) lookup(key UserKey) *limitState {
 }
 
 func newRateLimiter(bytesPerSecond int64) *rateLimiter {
-	l := &rateLimiter{}
+	l := &rateLimiter{changed: make(chan struct{})}
 	l.setRate(bytesPerSecond)
 	return l
 }
@@ -124,6 +135,10 @@ func newRateLimiter(bytesPerSecond int64) *rateLimiter {
 func (l *rateLimiter) setRate(bytesPerSecond int64) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	if l.changed != nil {
+		close(l.changed)
+	}
+	l.changed = make(chan struct{})
 	if bytesPerSecond <= 0 {
 		l.rate = 0
 		l.burst = 0

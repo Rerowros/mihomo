@@ -41,18 +41,46 @@ type tcpTracker struct {
 	manager *Manager
 
 	pushToManager bool `json:"-"`
+	inbound       string
+	inboundStats  bool
 	user          UserKey
 	userStats     bool
 	userCloseOnce sync.Once
 	quotaExceeded stdatomic.Bool
 }
 
-// bindUser remembers the authenticated inbound user for the per-user counters.
+// bindUser remembers the inbound and the authenticated user for the counters.
 func (tt *tcpTracker) bindUser(metadata *C.Metadata) {
+	if metadata != nil && metadata.InName != "" {
+		tt.inbound = metadata.InName
+		tt.inboundStats = true
+	}
 	if metadata != nil && metadata.InUser != "" {
 		tt.user = UserKey{Inbound: metadata.InName, User: metadata.InUser}
 		tt.userStats = true
 	}
+}
+
+func (tt *tcpTracker) pushInboundUploaded(size int64) {
+	if tt.inboundStats {
+		DefaultInboundManager.PushUploaded(tt.inbound, size)
+	}
+}
+
+func (tt *tcpTracker) pushInboundDownloaded(size int64) {
+	if tt.inboundStats {
+		DefaultInboundManager.PushDownloaded(tt.inbound, size)
+	}
+}
+
+func (tt *tcpTracker) pushUploaded(size int64) {
+	tt.pushInboundUploaded(size)
+	tt.pushUserUploaded(size)
+}
+
+func (tt *tcpTracker) pushDownloaded(size int64) {
+	tt.pushInboundDownloaded(size)
+	tt.pushUserDownloaded(size)
 }
 
 func (tt *tcpTracker) pushUserUploaded(size int64) {
@@ -87,7 +115,7 @@ func (tt *tcpTracker) Read(b []byte) (int, error) {
 	if tt.pushToManager {
 		tt.manager.PushDownloaded(download)
 	}
-	tt.pushUserDownloaded(download)
+	tt.pushDownloaded(download)
 	tt.DownloadTotal.Add(download)
 	tt.throttle(int(download), false)
 	if tt.quotaExceeded.Load() {
@@ -102,7 +130,7 @@ func (tt *tcpTracker) ReadBuffer(buffer *buf.Buffer) (err error) {
 	if tt.pushToManager {
 		tt.manager.PushDownloaded(download)
 	}
-	tt.pushUserDownloaded(download)
+	tt.pushDownloaded(download)
 	tt.DownloadTotal.Add(download)
 	tt.throttle(int(download), false)
 	if tt.quotaExceeded.Load() {
@@ -116,7 +144,7 @@ func (tt *tcpTracker) UnwrapReader() (io.Reader, []N.CountFunc) {
 		if tt.pushToManager {
 			tt.manager.PushDownloaded(download)
 		}
-		tt.pushUserDownloaded(download)
+		tt.pushDownloaded(download)
 		tt.DownloadTotal.Add(download)
 		tt.throttle(int(download), false)
 		if tt.quotaExceeded.Load() {
@@ -131,7 +159,7 @@ func (tt *tcpTracker) Write(b []byte) (int, error) {
 	if tt.pushToManager {
 		tt.manager.PushUploaded(upload)
 	}
-	tt.pushUserUploaded(upload)
+	tt.pushUploaded(upload)
 	tt.UploadTotal.Add(upload)
 	tt.throttle(int(upload), true)
 	if tt.quotaExceeded.Load() {
@@ -146,7 +174,7 @@ func (tt *tcpTracker) WriteBuffer(buffer *buf.Buffer) (err error) {
 	if tt.pushToManager {
 		tt.manager.PushUploaded(upload)
 	}
-	tt.pushUserUploaded(upload)
+	tt.pushUploaded(upload)
 	tt.UploadTotal.Add(upload)
 	tt.throttle(int(upload), true)
 	if tt.quotaExceeded.Load() {
@@ -178,7 +206,7 @@ func (tt *tcpTracker) UnwrapWriter() (io.Writer, []N.CountFunc) {
 		if tt.pushToManager {
 			tt.manager.PushUploaded(upload)
 		}
-		tt.pushUserUploaded(upload)
+		tt.pushUploaded(upload)
 		tt.UploadTotal.Add(upload)
 		tt.throttle(int(upload), true)
 		if tt.quotaExceeded.Load() {
@@ -239,6 +267,10 @@ func NewTCPTracker(conn C.Conn, manager *Manager, metadata *C.Metadata, rule C.R
 		// DNS and dialer-proxy trackers are internal: their connections are not
 		// sessions of the inbound user.
 		t.bindUser(metadata)
+		if t.inboundStats {
+			t.pushInboundUploaded(uploadTotal)
+			t.pushInboundDownloaded(downloadTotal)
+		}
 		if t.userStats {
 			t.pushUserUploaded(uploadTotal)
 			t.pushUserDownloaded(downloadTotal)
@@ -257,6 +289,8 @@ type udpTracker struct {
 	manager *Manager
 
 	pushToManager bool `json:"-"`
+	inbound       string
+	inboundStats  bool
 	user          UserKey
 	userStats     bool
 	userCloseOnce sync.Once
@@ -264,10 +298,36 @@ type udpTracker struct {
 }
 
 func (ut *udpTracker) bindUser(metadata *C.Metadata) {
+	if metadata != nil && metadata.InName != "" {
+		ut.inbound = metadata.InName
+		ut.inboundStats = true
+	}
 	if metadata != nil && metadata.InUser != "" {
 		ut.user = UserKey{Inbound: metadata.InName, User: metadata.InUser}
 		ut.userStats = true
 	}
+}
+
+func (ut *udpTracker) pushInboundUploaded(size int64) {
+	if ut.inboundStats {
+		DefaultInboundManager.PushUploaded(ut.inbound, size)
+	}
+}
+
+func (ut *udpTracker) pushInboundDownloaded(size int64) {
+	if ut.inboundStats {
+		DefaultInboundManager.PushDownloaded(ut.inbound, size)
+	}
+}
+
+func (ut *udpTracker) pushUploaded(size int64) {
+	ut.pushInboundUploaded(size)
+	ut.pushUserUploaded(size)
+}
+
+func (ut *udpTracker) pushDownloaded(size int64) {
+	ut.pushInboundDownloaded(size)
+	ut.pushUserDownloaded(size)
 }
 
 func (ut *udpTracker) pushUserUploaded(size int64) {
@@ -320,7 +380,7 @@ func (ut *udpTracker) ReadFrom(b []byte) (int, net.Addr, error) {
 	if ut.pushToManager {
 		ut.manager.PushDownloaded(download)
 	}
-	ut.pushUserDownloaded(download)
+	ut.pushDownloaded(download)
 	ut.DownloadTotal.Add(download)
 	ut.throttle(int(download), false)
 	if ut.quotaExceeded.Load() {
@@ -335,7 +395,7 @@ func (ut *udpTracker) WaitReadFrom() (data []byte, put func(), addr net.Addr, er
 	if ut.pushToManager {
 		ut.manager.PushDownloaded(download)
 	}
-	ut.pushUserDownloaded(download)
+	ut.pushDownloaded(download)
 	ut.DownloadTotal.Add(download)
 	ut.throttle(len(data), false)
 	if ut.quotaExceeded.Load() {
@@ -350,7 +410,7 @@ func (ut *udpTracker) WriteTo(b []byte, addr net.Addr) (int, error) {
 	if ut.pushToManager {
 		ut.manager.PushUploaded(upload)
 	}
-	ut.pushUserUploaded(upload)
+	ut.pushUploaded(upload)
 	ut.UploadTotal.Add(upload)
 	ut.throttle(int(upload), true)
 	if ut.quotaExceeded.Load() {
@@ -409,6 +469,10 @@ func NewUDPTracker(conn C.PacketConn, manager *Manager, metadata *C.Metadata, ru
 
 	if pushToManager {
 		ut.bindUser(metadata)
+		if ut.inboundStats {
+			ut.pushInboundUploaded(uploadTotal)
+			ut.pushInboundDownloaded(downloadTotal)
+		}
 		if ut.userStats {
 			ut.pushUserUploaded(uploadTotal)
 			ut.pushUserDownloaded(downloadTotal)

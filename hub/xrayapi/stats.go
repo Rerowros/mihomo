@@ -40,7 +40,7 @@ func statValue(name string, reset bool) (int64, bool) {
 				return download, true
 			}
 		case "inbound":
-			upload, download, found := statistic.DefaultUserManager.ResetTraffic(parts[1], "", reset && parts[3] == "uplink", reset && parts[3] == "downlink")
+			upload, download, found := statistic.DefaultInboundManager.ResetTraffic(parts[1], reset && parts[3] == "uplink", reset && parts[3] == "downlink")
 			if !found {
 				return 0, false
 			}
@@ -80,86 +80,84 @@ func queryStats(message []byte) ([]byte, int, string) {
 	if err != nil {
 		return nil, 3, err.Error()
 	}
-	type resetFlags struct {
-		upload   bool
-		download bool
-	}
 	entries := collectStats()
 	matched := make([]statPair, 0, len(entries))
-	usersToReset := make(map[string]resetFlags)
-	inboundsToReset := make(map[string]resetFlags)
 	for _, entry := range entries {
-		if !strings.Contains(entry.Name, pattern) {
-			continue
-		}
-		matched = append(matched, entry)
-		parts := strings.Split(entry.Name, ">>>")
-		if len(parts) != 4 || parts[2] != "traffic" {
-			continue
-		}
-		var flags resetFlags
-		if parts[3] == "uplink" {
-			flags.upload = true
-		} else if parts[3] == "downlink" {
-			flags.download = true
-		} else {
-			continue
-		}
-		switch parts[0] {
-		case "user":
-			current := usersToReset[parts[1]]
-			current.upload = current.upload || flags.upload
-			current.download = current.download || flags.download
-			usersToReset[parts[1]] = current
-		case "inbound":
-			current := inboundsToReset[parts[1]]
-			current.upload = current.upload || flags.upload
-			current.download = current.download || flags.download
-			inboundsToReset[parts[1]] = current
+		if strings.Contains(entry.Name, pattern) {
+			matched = append(matched, entry)
 		}
 	}
 	if reset {
-		for user, flags := range usersToReset {
-			statistic.DefaultUserManager.ResetTraffic("", user, flags.upload, flags.download)
-		}
-		for inbound, flags := range inboundsToReset {
-			statistic.DefaultUserManager.ResetTraffic(inbound, "", flags.upload, flags.download)
+		for i, entry := range matched {
+			parts := strings.Split(entry.Name, ">>>")
+			if len(parts) != 4 || parts[2] != "traffic" {
+				continue
+			}
+			upload := parts[3] == "uplink"
+			download := parts[3] == "downlink"
+			if !upload && !download {
+				continue
+			}
+			switch parts[0] {
+			case "user":
+				up, down, found := statistic.DefaultUserManager.ResetTraffic("", parts[1], upload, download)
+				if found {
+					if upload {
+						matched[i].Value = up
+					} else {
+						matched[i].Value = down
+					}
+				}
+			case "inbound":
+				up, down, found := statistic.DefaultInboundManager.ResetTraffic(parts[1], upload, download)
+				if found {
+					if upload {
+						matched[i].Value = up
+					} else {
+						matched[i].Value = down
+					}
+				}
+			}
 		}
 	}
 	return encodeStatsResponse(matched), 0, ""
 }
 
 func collectStats() []statPair {
-	type inboundTotals struct {
+	type userTotals struct {
 		upload   int64
 		download int64
+		conns    int64
 	}
-	byInbound := make(map[string]*inboundTotals)
-	entries := make([]statPair, 0, 32)
+	byUser := make(map[string]*userTotals)
 	for _, stat := range statistic.DefaultUserManager.Snapshot("", "", false) {
-		if stat.Upload > 0 {
-			entries = append(entries, statPair{Name: "user>>>" + stat.User + ">>>traffic>>>uplink", Value: stat.Upload})
-		}
-		if stat.Download > 0 {
-			entries = append(entries, statPair{Name: "user>>>" + stat.User + ">>>traffic>>>downlink", Value: stat.Download})
-		}
-		if stat.Conns > 0 {
-			entries = append(entries, statPair{Name: "user>>>" + stat.User + ">>>online", Value: stat.Conns})
-		}
-		totals := byInbound[stat.Inbound]
+		totals := byUser[stat.User]
 		if totals == nil {
-			totals = &inboundTotals{}
-			byInbound[stat.Inbound] = totals
+			totals = &userTotals{}
+			byUser[stat.User] = totals
 		}
 		totals.upload += stat.Upload
 		totals.download += stat.Download
+		totals.conns += stat.Conns
 	}
-	for inbound, totals := range byInbound {
+	entries := make([]statPair, 0, 32)
+	for user, totals := range byUser {
 		if totals.upload > 0 {
-			entries = append(entries, statPair{Name: "inbound>>>" + inbound + ">>>traffic>>>uplink", Value: totals.upload})
+			entries = append(entries, statPair{Name: "user>>>" + user + ">>>traffic>>>uplink", Value: totals.upload})
 		}
 		if totals.download > 0 {
-			entries = append(entries, statPair{Name: "inbound>>>" + inbound + ">>>traffic>>>downlink", Value: totals.download})
+			entries = append(entries, statPair{Name: "user>>>" + user + ">>>traffic>>>downlink", Value: totals.download})
+		}
+		if totals.conns > 0 {
+			entries = append(entries, statPair{Name: "user>>>" + user + ">>>online", Value: totals.conns})
+		}
+	}
+	for _, stat := range statistic.DefaultInboundManager.Snapshot() {
+		if stat.Upload > 0 {
+			entries = append(entries, statPair{Name: "inbound>>>" + stat.Inbound + ">>>traffic>>>uplink", Value: stat.Upload})
+		}
+		if stat.Download > 0 {
+			entries = append(entries, statPair{Name: "inbound>>>" + stat.Inbound + ">>>traffic>>>downlink", Value: stat.Download})
 		}
 	}
 	sort.Slice(entries, func(i, j int) bool { return entries[i].Name < entries[j].Name })
