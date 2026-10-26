@@ -59,6 +59,19 @@ const PacketUpMaxInFlight = 8
 // sc-max-buffered-posts (30) of Xray and mihomo servers.
 const packetUpMaxInFlightLimit = 20
 
+// packetUpRequestTimeout bounds one upload request. Without it a request that
+// never answers holds its slot of the seq window forever, and Write blocks
+// after the other slots fill.
+const packetUpRequestTimeout = 120 * time.Second
+
+// packetUpMaxUnacked bounds how many packet-up seqs of one session may be
+// waiting for a response. The slot of seq N is reused by seq N+packetUpMaxUnacked,
+// so the server never holds more than this many out-of-order segments, below its
+// default sc-max-buffered-posts (30). It is response-gated on purpose: unlike the
+// write slots (released at WroteRequest), this window bounds the reassembly
+// buffer of the server.
+const packetUpMaxUnacked = 24
+
 // packetUpMaxInFlight is used by new packet-up sessions.
 var packetUpMaxInFlight atomic.Int32
 
@@ -84,12 +97,14 @@ type PacketUpWriter struct {
 	writeMu              sync.Mutex
 	writeCond            sync.Cond
 	seq                  uint64
+	lastSend             time.Time
 	buf                  []byte
 	timer                *time.Timer
 	flushErr             error
 
-	inFlight chan struct{}  // one token per upload request in flight
-	uploads  sync.WaitGroup // upload goroutines
+	inFlight chan struct{}   // one token per request not yet written to the connection
+	unacked  []chan struct{} // seq window: one slot per response not yet read
+	uploads  sync.WaitGroup  // upload goroutines
 }
 
 func newPacketUpWriter(parent context.Context, cfg *Config, scMaxEachPostBytes int, scMinPostsIntervalMs Range,
@@ -110,6 +125,10 @@ func newPacketUpWriter(parent context.Context, cfg *Config, scMaxEachPostBytes i
 		sessionID:            sessionID,
 		transport:            transport,
 		inFlight:             make(chan struct{}, maxInFlight),
+		unacked:              make([]chan struct{}, packetUpMaxUnacked),
+	}
+	for i := range writer.unacked {
+		writer.unacked[i] = make(chan struct{}, 1)
 	}
 	writer.writeCond = sync.Cond{L: &writer.writeMu}
 	return writer
@@ -128,13 +147,33 @@ func (c *PacketUpWriter) Write(b []byte) (int, error) {
 
 	data := bytes.NewBuffer(b)
 	for data.Len() > 0 {
-		if c.timer == nil { // start a timer to flush the buffer
-			c.timer = time.AfterFunc(time.Duration(c.scMinPostsIntervalMs.Rand())*time.Millisecond, c.flush)
+		sendNow := false
+		if c.timer == nil { // pace the requests, not the writes: Xray sends the first chunk at once
+			interval := time.Duration(c.scMinPostsIntervalMs.Rand()) * time.Millisecond
+			wait := time.Duration(0)
+			if !c.lastSend.IsZero() {
+				if elapsed := time.Since(c.lastSend); elapsed < interval {
+					wait = interval - elapsed
+				}
+			}
+			if wait <= 0 {
+				sendNow = true
+			} else {
+				c.timer = time.AfterFunc(wait, c.flush)
+			}
 		}
 
 		c.buf = append(c.buf, data.Next(c.scMaxEachPostBytes-len(c.buf))...) // let buffer fill up to scMaxEachPostBytes
 
-		if len(c.buf) >= c.scMaxEachPostBytes { // too much data in buffer, wait the flush complete
+		if sendNow {
+			c.flushLocked()
+			if err := c.flushErr; err != nil {
+				return 0, err
+			}
+			if c.ctx.Err() != nil {
+				return 0, context.Cause(c.ctx)
+			}
+		} else if len(c.buf) >= c.scMaxEachPostBytes { // too much data in buffer, wait the flush complete
 			c.writeCond.Wait()
 			if err := c.flushErr; err != nil {
 				return 0, err
@@ -155,6 +194,11 @@ func (c *PacketUpWriter) flush() {
 		c.timer = nil
 	}
 
+	c.flushLocked()
+}
+
+// flushLocked sends the buffered data. The caller holds writeMu.
+func (c *PacketUpWriter) flushLocked() {
 	if c.flushErr != nil {
 		return
 	}
@@ -164,6 +208,7 @@ func (c *PacketUpWriter) flush() {
 	}
 	data := c.buf
 	c.buf = nil // the upload goroutine owns data now
+	c.lastSend = time.Now()
 	if err := c.send(data); err != nil {
 		c.flushErr = err
 		return
@@ -171,31 +216,60 @@ func (c *PacketUpWriter) flush() {
 }
 
 // send starts an upload request for b without waiting for its response. It
-// blocks while PacketUpMaxInFlight requests are in flight, which blocks Write,
-// so at most that many requests plus one buffer are held in memory.
+// blocks while maxInFlight requests are not yet written to the connection
+// (WroteRequest) and while all slots of the seq window are waiting for a
+// response, which blocks Write. The window bounds the reassembly buffer of the
+// server; the write slots bound the memory held before the wire.
 func (c *PacketUpWriter) send(b []byte) error {
+	seq := c.seq
+	c.seq++
+
+	// The slot of seq N is reused by seq N+len(unacked): the server sees at most
+	// len(unacked) unanswered segments.
+	slot := c.unacked[int(seq%uint64(len(c.unacked)))]
 	select {
-	case c.inFlight <- struct{}{}:
+	case slot <- struct{}{}:
 	case <-c.ctx.Done():
 		return context.Cause(c.ctx)
 	}
 
-	req, err := c.newRequest(b)
+	select {
+	case c.inFlight <- struct{}{}:
+	case <-c.ctx.Done():
+		<-slot
+		return context.Cause(c.ctx)
+	}
+
+	req, err := c.newRequest(b, strconv.FormatUint(seq, 10))
 	if err != nil {
 		<-c.inFlight
+		<-slot
 		return err
 	}
+
+	// The write slot is freed once the request has left for the wire, not when
+	// the server answers: the answer is paced by the server's interval, not by
+	// the round trip. The seq slot stays until the response is read, so the
+	// server buffer is not overrun.
+	var writeOnce sync.Once
+	written := func() { writeOnce.Do(func() { <-c.inFlight }) }
+	reqCtx, reqCancel := context.WithTimeout(req.Context(), packetUpRequestTimeout)
+	req = req.WithContext(httptrace.WithClientTrace(reqCtx, &httptrace.ClientTrace{
+		WroteRequest: func(httptrace.WroteRequestInfo) { written() },
+	}))
 
 	// Requests may reach the server slightly out of order, like Xray's; the
 	// server puts them back in order by seq.
 	c.uploads.Add(1)
-	go c.upload(req)
+	go c.upload(req, slot, written, reqCancel)
 	return nil
 }
 
-func (c *PacketUpWriter) upload(req *http.Request) {
+func (c *PacketUpWriter) upload(req *http.Request, slot chan struct{}, written func(), cancel context.CancelFunc) {
 	defer c.uploads.Done()
-	defer func() { <-c.inFlight }()
+	defer cancel()
+	defer written() // a request that failed before WroteRequest still frees the write slot
+	defer func() { <-slot }()
 
 	if err := c.roundTrip(req); err != nil {
 		// Any failed request breaks the stream: abort the other requests of
@@ -205,7 +279,7 @@ func (c *PacketUpWriter) upload(req *http.Request) {
 	}
 }
 
-func (c *PacketUpWriter) newRequest(b []byte) (*http.Request, error) {
+func (c *PacketUpWriter) newRequest(b []byte, seqStr string) (*http.Request, error) {
 	u := url.URL{
 		Scheme: "https",
 		Host:   c.cfg.Host,
@@ -216,9 +290,6 @@ func (c *PacketUpWriter) newRequest(b []byte) (*http.Request, error) {
 	if err != nil {
 		return nil, err
 	}
-
-	seqStr := strconv.FormatUint(c.seq, 10)
-	c.seq++
 
 	if err := c.cfg.FillPacketRequest(req, c.sessionID, seqStr, b); err != nil {
 		return nil, err
