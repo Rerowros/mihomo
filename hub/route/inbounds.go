@@ -93,12 +93,28 @@ func putInboundUsers(w http.ResponseWriter, r *http.Request) {
 		render.JSON(w, r, newError(err.Error()))
 		return
 	}
-	err := listener.UpdateInboundUsers(name, func([]C.InboundUser) ([]C.InboundUser, error) {
+	var removed []string
+	err := listener.UpdateInboundUsers(name, func(users []C.InboundUser) ([]C.InboundUser, error) {
+		for _, old := range users {
+			kept := false
+			for _, next := range payload.Users {
+				if next.Username == old.Username {
+					kept = true
+					break
+				}
+			}
+			if !kept {
+				removed = append(removed, old.Username)
+			}
+		}
 		return payload.Users, nil
 	})
 	if err != nil {
 		writeInboundUserError(w, r, err)
 		return
+	}
+	for _, user := range removed {
+		statistic.DefaultManager.CloseByUser(name, user)
 	}
 	render.NoContent(w, r)
 }
