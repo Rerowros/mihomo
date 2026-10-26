@@ -52,6 +52,7 @@
 - **Xray gRPC API**: `hub/xrayapi/` — `HandlerService` (AlterInbound AddUser/RemoveUser, GetInboundUsers(+Count), ListInbounds) и `StatsService` (GetStats, QueryStats, GetUsersStats, GetStatsOnline(IpList), GetAllOnlineUsers, GetSysStats), имена `xray.*` и `v2ray.core.*`; gRPC поверх штатного HTTP/2 (h2c), без новых зависимостей. `xray api adu/rmu/lsi/inbounduser/stats/statsquery/statsonline` проверены против mihomo.
 - **Динамические пользователи**: атомарная (copy-on-write) таблица VLESS в `listener/sing_vless`, `SetUsers` на живом listener, REST `/inbounds/{name}/users`; снятие пользователя закрывает его сессии (`Manager.CloseByUser`).
 - **Per-user лимиты**: `tunnel/statistic/limits.go` — max-conns, up/down Bps (token bucket), квота upload+download, expiry; проверка до dial (TCP и UDP), расход в tracker; `user-limits:` и `/limits/users` (+ `reset-quota`).
+- **Inbound-счётчики**: `tunnel/statistic/inbounds.go` — отдельные upload/download на inbound; `inbound>>>tag>>>traffic>>>*` не смешивается с user-счётчиками, reset одного не обнуляет другое.
 - **Память idle-соединений**: `common/net/relay_copy.go` — маленький буфер 2 КиБ, пока соединение простаивает, полные буферы при передаче; `common/net/bufconn.go` — ленивый `bufio.Reader` (4 КиБ только при первом использовании); GC ballast 8 МиБ в серверных сборках (`component/gcballast`).
 - **XHTTP**: cap 4096 неавторизованных сессий (503), 15 с на тело до download, reaper 30 с, быстрый путь карты сессий, окно seq 24, GET-uplink; P8.
 - **Xdrive**: P9 (клиент + сервер, local/Google Drive/template).
