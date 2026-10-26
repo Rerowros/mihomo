@@ -89,7 +89,9 @@ func decodeAlterInbound(data []byte) (tag string, op typedMessage, err error) {
 		case 1:
 			tag = string(b)
 		case 2:
-			op, _ = decodeTypedMessage(b)
+			var err error
+			op, err = decodeTypedMessage(b)
+			return err
 		}
 		return nil
 	})
@@ -119,7 +121,9 @@ func decodeUser(data []byte) (xrayUser, error) {
 		case 2:
 			user.Email = string(b)
 		case 3:
-			user.Account, _ = decodeTypedMessage(b)
+			var err error
+			user.Account, err = decodeTypedMessage(b)
+			return err
 		}
 		return nil
 	})
@@ -130,7 +134,9 @@ func decodeAddUserOperation(data []byte) (xrayUser, error) {
 	var user xrayUser
 	err := walkFields(data, func(num protowire.Number, _ protowire.Type, _ uint64, b []byte) error {
 		if num == 1 {
-			user, _ = decodeUser(b)
+			var err error
+			user, err = decodeUser(b)
+			return err
 		}
 		return nil
 	})

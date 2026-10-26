@@ -48,9 +48,7 @@ func addUser(tag string, operation []byte) ([]byte, int, string) {
 	err = listener.UpdateInboundUsers(tag, func(users []C.InboundUser) ([]C.InboundUser, error) {
 		for i := range users {
 			if users[i].Username == user.Email {
-				users[i].UUID = account.UUID
-				users[i].Flow = account.Flow
-				return users, nil
+				return nil, C.ErrInboundUserExists
 			}
 		}
 		return append(users, C.InboundUser{
@@ -60,6 +58,9 @@ func addUser(tag string, operation []byte) ([]byte, int, string) {
 		}), nil
 	})
 	if err != nil {
+		if errors.Is(err, C.ErrInboundUserExists) {
+			return nil, 6, "user " + user.Email + " already exists"
+		}
 		return nil, userErrorCode(err), "failed to get handler: " + err.Error()
 	}
 	return nil, 0, ""
