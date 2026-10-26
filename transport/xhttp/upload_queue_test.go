@@ -42,6 +42,31 @@ func TestUploadQueueMaxPackets(t *testing.T) {
 	require.NoError(t, q.Close())
 }
 
+func TestUploadQueueAdmitsNextSeqWhenFull(t *testing.T) {
+	q := NewUploadQueue(2)
+	// Out of order: the reader waits for seq 0 while 1 and 2 already fill the
+	// map. Seq 0 must still be accepted, or both sides wait forever.
+	require.NoError(t, q.Push(Packet{Seq: 1, Payload: []byte("1")}))
+	require.NoError(t, q.Push(Packet{Seq: 2, Payload: []byte("2")}))
+
+	done := make(chan error, 1)
+	go func() { done <- q.Push(Packet{Seq: 0, Payload: []byte("0")}) }()
+	select {
+	case err := <-done:
+		require.NoError(t, err)
+	case <-time.After(time.Second):
+		t.Fatal("Push of the next seq blocked on a full queue")
+	}
+
+	buf := make([]byte, 4)
+	for _, want := range []string{"0", "1", "2"} {
+		n, err := q.Read(buf)
+		require.NoError(t, err)
+		require.Equal(t, want, string(buf[:n]))
+	}
+	require.NoError(t, q.Close())
+}
+
 // A retried GET (net/http may resend it on a reused connection) carries a seq
 // the reader has already consumed. It must be dropped instead of taking space
 // in the reassembly map forever.
