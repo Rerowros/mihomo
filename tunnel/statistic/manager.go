@@ -58,6 +58,24 @@ func (m *Manager) Range(f func(c Tracker) bool) {
 	})
 }
 
+// CloseByUser closes every live connection of one inbound user and returns how
+// many it closed. Removing a user from the user table stops new handshakes;
+// this ends the sessions that were already established.
+func (m *Manager) CloseByUser(inbound, user string) int {
+	var matched []Tracker
+	m.connections.Range(func(_ string, c Tracker) bool {
+		metadata := c.Info().Metadata
+		if metadata != nil && metadata.InName == inbound && metadata.InUser == user {
+			matched = append(matched, c)
+		}
+		return true
+	})
+	for _, c := range matched {
+		_ = c.Close()
+	}
+	return len(matched)
+}
+
 func (m *Manager) PushUploaded(size int64) {
 	m.uploadTemp.Add(size)
 	m.uploadTotal.Add(size)

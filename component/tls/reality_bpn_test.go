@@ -13,7 +13,7 @@ import (
 )
 
 // BadVPN patch set (see BADVPN.md): REALITY must report the Xray-style client
-// version 26.3.27 (P1/P3). X25519MLKEM768 is stripped from the ClientHello
+// version 26.10.21 (P1/P3). X25519MLKEM768 is stripped from the ClientHello
 // unless reality-opts.support-x25519mlkem768 is true (P4, upstream semantics);
 // with it, the fingerprint's ML-KEM key share stays before X25519, as Xray
 // >= 26.9.8 (XTLS/REALITY 8cdf7bf) requires.
@@ -43,7 +43,7 @@ func TestBPNRealityDefaultClientVersion(t *testing.T) {
 			id, _ := GetFingerprint(name)
 			hello, privateKey := captureRealityClientHello(t, id)
 			plain := decryptRealitySessionID(t, hello, privateKey)
-			if got, want := [3]byte(plain[:3]), [3]byte{26, 3, 27}; got != want {
+			if got, want := [3]byte(plain[:3]), [3]byte{26, 10, 21}; got != want {
 				t.Fatalf("REALITY client version = %v, want %v", got, want)
 			}
 			if plain[3] != 0 {
@@ -59,6 +59,39 @@ func TestBPNRealityClientVersionOverride(t *testing.T) {
 	plain := decryptRealitySessionID(t, hello, privateKey)
 	if got, want := [3]byte(plain[:3]), [3]byte{1, 8, 2}; got != want {
 		t.Fatalf("REALITY client version = %v, want %v", got, want)
+	}
+}
+
+// The configured mlkem-client-fingerprint must reach the wire: the captured
+// ClientHello has the shape of Firefox, not of the configured chrome, exactly
+// when the handshake offers X25519MLKEM768.
+func TestBPNRealityMLKEMFingerprintReachesClientHello(t *testing.T) {
+	firefox, _ := GetFingerprint("firefox")
+	hello, _ := captureRealityClientHelloWithConfig(t, utls.HelloChrome_Auto, RealityConfig{
+		SupportX25519MLKEM768: true,
+		MLKEMFingerprint:      &firefox,
+	})
+	assertClientHelloShape(t, buildClientHello(t, utls.HelloFirefox_Auto), hello)
+	if !slices.Contains(keyShareGroups(hello), utls.X25519MLKEM768) {
+		t.Fatalf("Firefox ClientHello has no X25519MLKEM768: %v", keyShareGroups(hello))
+	}
+}
+
+func TestBPNRealityMLKEMFingerprintSelection(t *testing.T) {
+	chrome, _ := GetFingerprint("chrome")
+	firefox, _ := GetFingerprint("firefox")
+
+	config := &RealityConfig{MLKEMFingerprint: &firefox}
+	if got := realityFingerprint(true, chrome, config); got.Client != firefox.Client || got.Version != firefox.Version {
+		t.Fatalf("ML-KEM handshake used %s %s, want firefox", got.Client, got.Version)
+	}
+	if got := realityFingerprint(false, chrome, config); got.Client != chrome.Client || got.Version != chrome.Version {
+		t.Fatalf("classic handshake used %s %s, want the configured chrome", got.Client, got.Version)
+	}
+
+	config = &RealityConfig{}
+	if got := realityFingerprint(true, chrome, config); got.Client != chrome.Client || got.Version != chrome.Version {
+		t.Fatalf("without mlkem-client-fingerprint ML-KEM handshake used %s %s, want chrome", got.Client, got.Version)
 	}
 }
 

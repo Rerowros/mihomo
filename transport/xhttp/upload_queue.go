@@ -54,7 +54,14 @@ func (q *UploadQueue) Push(p Packet) error {
 		return nil
 	}
 
-	for len(q.packets) > q.maxPackets {
+	// net/http may resend a GET on a reused connection after the server has
+	// already consumed it. Such a seq is below nextSeq and can never be read;
+	// keeping it would fill the map and eventually block the stream.
+	if p.Seq < q.nextSeq {
+		return nil
+	}
+
+	for len(q.packets) >= q.maxPackets {
 		q.condPopped.Wait() // wait for the reader to read the packets
 		if q.closed {
 			return io.ErrClosedPipe
