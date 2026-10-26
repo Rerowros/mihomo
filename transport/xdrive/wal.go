@@ -145,6 +145,11 @@ func (w *walWriter) flushLocked() error {
 	if w.err != nil {
 		return w.err
 	}
+	// The wait released w.mu: the flush timer or Close may have sent this
+	// buffer already. Do not publish an empty segment with a used seq.
+	if len(w.buf) == 0 {
+		return nil
+	}
 
 	n := len(w.buf)
 	if n > w.segmentBytes {
