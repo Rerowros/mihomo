@@ -18,8 +18,9 @@ import (
 // waits for data and hands the source back to the copy loop when a burst ends.
 
 // readAheadBuffers is how many buffers the reader of a batched copy may hold
-// ahead of the writer: up to 256 KiB of pool buffers per direction while a
-// transfer runs, none while the connection is idle.
+// ahead of the writer. Together with the write batch (readAheadBuffers+1) it
+// bounds the extra pool buffers per direction while a transfer runs; an idle
+// connection holds none.
 const readAheadBuffers = 8
 
 // errHandBack ends a read-ahead: the reader saw the burst end and leaves the
