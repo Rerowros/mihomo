@@ -25,6 +25,7 @@ import (
 	"github.com/metacubex/mihomo/transport/vless"
 	"github.com/metacubex/mihomo/transport/vless/encryption"
 	"github.com/metacubex/mihomo/transport/vmess"
+	"github.com/metacubex/mihomo/transport/xdrive"
 	"github.com/metacubex/mihomo/transport/xhttp"
 
 	"github.com/metacubex/http"
@@ -47,6 +48,8 @@ type Vless struct {
 	gunClient *gun.Client
 	// for xhttp
 	xhttpClient *xhttp.Client
+	// for xdrive
+	xdriveClient *xdrive.Client
 
 	echConfig       *ech.Config
 	shadowTLSConfig *shadowtls.Config
@@ -80,6 +83,7 @@ type VlessOption struct {
 	GrpcOpts          GrpcOptions       `proxy:"grpc-opts,omitempty"`
 	WSOpts            WSOptions         `proxy:"ws-opts,omitempty"`
 	XHTTPOpts         XHTTPOptions      `proxy:"xhttp-opts,omitempty"`
+	XDriveOpts        XDriveOptions     `proxy:"xdrive-opts,omitempty"`
 	WSHeaders         map[string]string `proxy:"ws-headers,omitempty"`
 	SkipCertVerify    bool              `proxy:"skip-cert-verify,omitempty"`
 	NameCertVerify    string            `proxy:"name-cert-verify,omitempty"`
@@ -116,6 +120,43 @@ type XHTTPOptions struct {
 	ScMinPostsIntervalMs string                 `proxy:"sc-min-posts-interval-ms,omitempty"`
 	ReuseSettings        *XHTTPReuseSettings    `proxy:"reuse-settings,omitempty"` // aka XMUX
 	DownloadSettings     *XHTTPDownloadSettings `proxy:"download-settings,omitempty"`
+}
+
+// XDriveOptions configures the xdrive transport: a byte stream split into
+// numbered segment objects in a cloud folder that both peers poll. It is the
+// same protocol as Xray-core transport/internet/xdrive, so a mihomo client can
+// talk to an Xray server and vice versa. The cloud service provides the
+// transport security (HTTPS); do not put TLS on top of the stream.
+type XDriveOptions struct {
+	Service           string   `proxy:"service,omitempty"`
+	RemoteFolder      string   `proxy:"remote-folder,omitempty"`
+	Secrets           []string `proxy:"secrets,omitempty"`
+	Template          string   `proxy:"template,omitempty"`
+	SegmentBytes      int      `proxy:"segment-bytes,omitempty"`
+	FlushIntervalMs   int      `proxy:"flush-interval-ms,omitempty"`
+	PollIntervalMs    int      `proxy:"poll-interval-ms,omitempty"`
+	MaxPollIntervalMs int      `proxy:"max-poll-interval-ms,omitempty"`
+	EagerWindowMs     int      `proxy:"eager-window-ms,omitempty"`
+	HoleTimeoutMs     int      `proxy:"hole-timeout-ms,omitempty"`
+	SessionTTLSeconds int      `proxy:"session-ttl-seconds,omitempty"`
+	Concurrency       int      `proxy:"concurrency,omitempty"`
+}
+
+func (o XDriveOptions) Build() *xdrive.Config {
+	return &xdrive.Config{
+		Service:         o.Service,
+		RemoteFolder:    o.RemoteFolder,
+		Secrets:         o.Secrets,
+		Template:        o.Template,
+		SegmentBytes:    o.SegmentBytes,
+		FlushInterval:   time.Duration(o.FlushIntervalMs) * time.Millisecond,
+		PollInterval:    time.Duration(o.PollIntervalMs) * time.Millisecond,
+		MaxPollInterval: time.Duration(o.MaxPollIntervalMs) * time.Millisecond,
+		EagerWindow:     time.Duration(o.EagerWindowMs) * time.Millisecond,
+		HoleTimeout:     time.Duration(o.HoleTimeoutMs) * time.Millisecond,
+		SessionTTL:      time.Duration(o.SessionTTLSeconds) * time.Second,
+		Concurrency:     o.Concurrency,
+	}
 }
 
 type XHTTPReuseSettings struct {
@@ -255,6 +296,8 @@ func (v *Vless) StreamConnContext(ctx context.Context, c net.Conn, metadata *C.M
 		break // already handle in dialContext
 	case "xhttp":
 		break // already handle in dialContext
+	case "xdrive":
+		break // already handle in dialContext
 	default:
 		// default tcp network
 		// handle TLS
@@ -343,6 +386,8 @@ func (v *Vless) dialContext(ctx context.Context) (c net.Conn, err error) {
 		return v.gunClient.Dial()
 	case "xhttp":
 		return v.xhttpClient.Dial(ctx)
+	case "xdrive":
+		return v.xdriveClient.Dial(ctx)
 	default:
 	}
 	return v.dialer.DialContext(ctx, "tcp", v.addr)
@@ -425,6 +470,11 @@ func (v *Vless) Close() error {
 	}
 	if v.xhttpClient != nil {
 		if err := v.xhttpClient.Close(); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	if v.xdriveClient != nil {
+		if err := v.xdriveClient.Close(); err != nil {
 			errs = append(errs, err)
 		}
 	}
@@ -611,6 +661,11 @@ func NewVless(option VlessOption) (*Vless, error) {
 			option.GrpcOpts.MinStreams,
 			option.GrpcOpts.MaxStreams,
 		)
+	case "xdrive":
+		v.xdriveClient, err = xdrive.NewClient(option.XDriveOpts.Build())
+		if err != nil {
+			return nil, err
+		}
 	case "xhttp":
 		requestHost := v.option.XHTTPOpts.Host
 		if requestHost == "" {

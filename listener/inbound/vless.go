@@ -15,6 +15,7 @@ type VlessOption struct {
 	Decryption      string        `inbound:"decryption,omitempty"`
 	WsPath          string        `inbound:"ws-path,omitempty"`
 	XHTTPConfig     XHTTPConfig   `inbound:"xhttp-config,omitempty"`
+	XDriveConfig    XDriveConfig  `inbound:"xdrive-config,omitempty"`
 	GrpcServiceName string        `inbound:"grpc-service-name,omitempty"`
 	Certificate     string        `inbound:"certificate,omitempty"`
 	PrivateKey      string        `inbound:"private-key,omitempty"`
@@ -57,6 +58,40 @@ type XHTTPConfig struct {
 	ScStreamUpServerSecs string `inbound:"sc-stream-up-server-secs,omitempty"`
 	ScMaxBufferedPosts   string `inbound:"sc-max-buffered-posts,omitempty"`
 	ScMaxEachPostBytes   string `inbound:"sc-max-each-post-bytes,omitempty"`
+}
+
+// XDriveConfig is the inbound form of XDriveOptions. The inbound has no
+// listening port: it polls the session directory of the storage.
+type XDriveConfig struct {
+	Service           string   `inbound:"service"`
+	RemoteFolder      string   `inbound:"remote-folder"`
+	Secrets           []string `inbound:"secrets,omitempty"`
+	Template          string   `inbound:"template,omitempty"`
+	SegmentBytes      int      `inbound:"segment-bytes,omitempty"`
+	FlushIntervalMs   int      `inbound:"flush-interval-ms,omitempty"`
+	PollIntervalMs    int      `inbound:"poll-interval-ms,omitempty"`
+	MaxPollIntervalMs int      `inbound:"max-poll-interval-ms,omitempty"`
+	EagerWindowMs     int      `inbound:"eager-window-ms,omitempty"`
+	HoleTimeoutMs     int      `inbound:"hole-timeout-ms,omitempty"`
+	SessionTTLSeconds int      `inbound:"session-ttl-seconds,omitempty"`
+	Concurrency       int      `inbound:"concurrency,omitempty"`
+}
+
+func (o XDriveConfig) Build() LC.XDriveConfig {
+	return LC.XDriveConfig{
+		Service:           o.Service,
+		RemoteFolder:      o.RemoteFolder,
+		Secrets:           o.Secrets,
+		Template:          o.Template,
+		SegmentBytes:      o.SegmentBytes,
+		FlushIntervalMs:   o.FlushIntervalMs,
+		PollIntervalMs:    o.PollIntervalMs,
+		MaxPollIntervalMs: o.MaxPollIntervalMs,
+		EagerWindowMs:     o.EagerWindowMs,
+		HoleTimeoutMs:     o.HoleTimeoutMs,
+		SessionTTLSeconds: o.SessionTTLSeconds,
+		Concurrency:       o.Concurrency,
+	}
 }
 
 func (o XHTTPConfig) Build() LC.XHTTPConfig {
@@ -119,6 +154,7 @@ func NewVless(options *VlessOption) (*Vless, error) {
 			Decryption:      options.Decryption,
 			WsPath:          options.WsPath,
 			XHTTPConfig:     options.XHTTPConfig.Build(),
+			XDriveConfig:    options.XDriveConfig.Build(),
 			GrpcServiceName: options.GrpcServiceName,
 			Certificate:     options.Certificate,
 			PrivateKey:      options.PrivateKey,
@@ -142,6 +178,9 @@ func (v *Vless) Config() C.InboundConfig {
 
 // Address implements constant.InboundListener
 func (v *Vless) Address() string {
+	if v.config.XDriveConfig.Service != "" {
+		return "xdrive:" + v.config.XDriveConfig.Service
+	}
 	var addrList []string
 	if v.l != nil {
 		for _, addr := range v.l.AddrList() {
