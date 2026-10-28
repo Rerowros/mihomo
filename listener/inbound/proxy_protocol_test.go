@@ -150,6 +150,34 @@ func startProxyVless(t *testing.T, tunnel C.Tunnel, option inbound.BaseOption, d
 	return out
 }
 
+// ppInbound is what the PROXY protocol tests start of an inbound.
+type ppInbound interface {
+	Listen(tunnel C.Tunnel) error
+	Close() error
+	Address() string
+}
+
+// listenPP starts in, made with err, and returns its address.
+func listenPP(t *testing.T, tunnel C.Tunnel, in ppInbound, err error) netip.AddrPort {
+	t.Helper()
+	require.NoError(t, err)
+	require.NoError(t, in.Listen(tunnel))
+	t.Cleanup(func() { _ = in.Close() })
+	return netip.MustParseAddrPort(in.Address())
+}
+
+// ppUsers are the users of the SOCKS and mixed inbounds: an inbound of none takes the
+// default auth store, whose allow-lan filter turns the client of the header away.
+var ppUsers = inbound.AuthUsers{{Username: "test", Password: userUUID}}
+
+// outPP returns out, made with err, closed with the test.
+func outPP[O C.ProxyAdapter](t *testing.T, out O, err error) C.ProxyAdapter {
+	t.Helper()
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = out.Close() })
+	return out
+}
+
 // TestInboundProxyProtocol_Source checks, per protocol, that the tunnel sees
 // the client of the header as the source of the connection.
 func TestInboundProxyProtocol_Source(t *testing.T) {
@@ -206,6 +234,45 @@ func TestInboundProxyProtocol_Source(t *testing.T) {
 			require.NoError(t, err)
 			t.Cleanup(func() { _ = out.Close() })
 			return out
+		}},
+		{"socks", func(t *testing.T, tunnel C.Tunnel, d C.Dialer) C.ProxyAdapter {
+			in, err := inbound.NewSocks(&inbound.SocksOption{BaseOption: proxyBase("socks_pp"), Users: ppUsers})
+			ap := listenPP(t, tunnel, in, err)
+			outOpt := outbound.Socks5Option{Name: "socks_pp", Server: ap.Addr().String(), Port: int(ap.Port()), UserName: "test", Password: userUUID}
+			outOpt.DialerForAPI = d
+			out, err := outbound.NewSocks5(outOpt)
+			return outPP(t, out, err)
+		}},
+		{"mixed", func(t *testing.T, tunnel C.Tunnel, d C.Dialer) C.ProxyAdapter {
+			in, err := inbound.NewMixed(&inbound.MixedOption{BaseOption: proxyBase("mixed_pp"), Users: ppUsers})
+			ap := listenPP(t, tunnel, in, err)
+			outOpt := outbound.Socks5Option{Name: "mixed_pp", Server: ap.Addr().String(), Port: int(ap.Port()), UserName: "test", Password: userUUID}
+			outOpt.DialerForAPI = d
+			out, err := outbound.NewSocks5(outOpt)
+			return outPP(t, out, err)
+		}},
+		{"shadowsocks", func(t *testing.T, tunnel C.Tunnel, d C.Dialer) C.ProxyAdapter {
+			in, err := inbound.NewShadowSocks(&inbound.ShadowSocksOption{
+				BaseOption: proxyBase("ss_pp"),
+				Password:   userUUID,
+				Cipher:     "chacha20-ietf-poly1305",
+			})
+			ap := listenPP(t, tunnel, in, err)
+			outOpt := outbound.ShadowSocksOption{Name: "ss_pp", Server: ap.Addr().String(), Port: int(ap.Port()), Password: userUUID, Cipher: "chacha20-ietf-poly1305"}
+			outOpt.DialerForAPI = d
+			out, err := outbound.NewShadowSocks(outOpt)
+			return outPP(t, out, err)
+		}},
+		{"vmess", func(t *testing.T, tunnel C.Tunnel, d C.Dialer) C.ProxyAdapter {
+			in, err := inbound.NewVmess(&inbound.VmessOption{
+				BaseOption: proxyBase("vmess_pp"),
+				Users:      []inbound.VmessUser{{Username: "test", UUID: userUUID}},
+			})
+			ap := listenPP(t, tunnel, in, err)
+			outOpt := outbound.VmessOption{Name: "vmess_pp", Server: ap.Addr().String(), Port: int(ap.Port()), UUID: userUUID, Cipher: "auto"}
+			outOpt.DialerForAPI = d
+			out, err := outbound.NewVmess(outOpt)
+			return outPP(t, out, err)
 		}},
 	}
 	for _, p := range protocols {
@@ -474,6 +541,12 @@ func TestInboundProxyProtocol_Options(t *testing.T) {
 // stream after the header and its connection keeps the address of the one
 // below.
 func TestInboundProxyProtocol_RealitySource(t *testing.T) {
+	t.Run("plain", func(t *testing.T) { testRealitySource(t, "") })
+	t.Run("vision", func(t *testing.T) { testRealitySource(t, "xtls-rprx-vision") })
+}
+
+// testRealitySource is TestInboundProxyProtocol_RealitySource with the user's flow.
+func testRealitySource(t *testing.T, flow string) {
 	cert, err := tls.X509KeyPair([]byte(tlsCertificate), []byte(tlsPrivateKey))
 	require.NoError(t, err)
 	dest, err := tls.Listen("tcp", "127.0.0.1:0", &tls.Config{Certificates: []tls.Certificate{cert}, MinVersion: tls.VersionTLS13})
@@ -510,7 +583,7 @@ func TestInboundProxyProtocol_RealitySource(t *testing.T) {
 	}
 	in, err := inbound.NewVless(&inbound.VlessOption{
 		BaseOption: proxyBase("vless_pp_reality_src"),
-		Users:      []inbound.VlessUser{{Username: "test", UUID: userUUID}},
+		Users:      []inbound.VlessUser{{Username: "test", UUID: userUUID, Flow: flow}},
 		RealityConfig: inbound.RealityConfig{
 			Dest:        dest.Addr().String(),
 			PrivateKey:  realityPrivateKey,
@@ -524,7 +597,7 @@ func TestInboundProxyProtocol_RealitySource(t *testing.T) {
 
 	ap := netip.MustParseAddrPort(in.Address())
 	outOpt := outbound.VlessOption{
-		Name: "vless_pp_reality_src", Server: ap.Addr().String(), Port: int(ap.Port()), UUID: userUUID,
+		Name: "vless_pp_reality_src", Server: ap.Addr().String(), Port: int(ap.Port()), UUID: userUUID, Flow: flow,
 		TLS: true, ServerName: "localhost", ClientFingerprint: "chrome",
 		RealityOpts: outbound.RealityOptions{PublicKey: realityPublickey, ShortID: realityShortid},
 	}
