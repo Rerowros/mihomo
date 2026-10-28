@@ -53,7 +53,7 @@ type Trojan struct {
 }
 
 func NewTrojan(options *TrojanOption) (*Trojan, error) {
-	base, err := NewBase(&options.BaseOption)
+	base, err := newStreamBase(&options.BaseOption)
 	if err != nil {
 		return nil, err
 	}

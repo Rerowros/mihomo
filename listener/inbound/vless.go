@@ -98,7 +98,7 @@ type Vless struct {
 }
 
 func NewVless(options *VlessOption) (*Vless, error) {
-	base, err := NewBase(&options.BaseOption)
+	base, err := newStreamBase(&options.BaseOption)
 	if err != nil {
 		return nil, err
 	}
