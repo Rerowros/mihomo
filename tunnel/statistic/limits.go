@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/metacubex/mihomo/component/eventbus"
+	C "github.com/metacubex/mihomo/constant"
 )
 
 var (
@@ -349,6 +350,19 @@ type Admission struct {
 
 // Release frees the slot; calls after the first are no-ops.
 func (a *Admission) Release() {
+	a.free(false)
+}
+
+// ReleaseFor is Release for a connection of session: when the session was
+// revoked, the address is dropped without a release window. A connection that
+// passed the revoke check of the tunnel, then the forgetting of the revoked
+// addresses, then Admit, and is only refused afterwards would otherwise keep a
+// max-ips place of the user given the name again for the whole window.
+func (a *Admission) ReleaseFor(session C.InboundSession) {
+	a.free(session != nil && session.Revoked())
+}
+
+func (a *Admission) free(revoked bool) {
 	if a == nil {
 		return
 	}
@@ -360,7 +374,11 @@ func (a *Admission) Release() {
 			}
 			a.state.mu.Unlock()
 		}
-		a.ips.release(a.slot, a.entry, time.Now())
+		if revoked {
+			a.ips.discard(a.slot, a.entry)
+		} else {
+			a.ips.release(a.slot, a.entry, time.Now())
+		}
 	})
 }
 

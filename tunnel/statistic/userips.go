@@ -147,6 +147,29 @@ func (s *userIPs) release(slot ipSlot, entry *ipEntry, now time.Time) {
 	}
 }
 
+// discard ends one connection of entry like release, but without a release
+// window: the connection belonged to a revoked user, so its address must not
+// hold a max-ips place of a user given the name again. An entry that never
+// closed before goes away with its last connection; one that was already in
+// its window keeps the old window instead of starting a new one.
+func (s *userIPs) discard(slot ipSlot, entry *ipEntry) {
+	if s == nil || entry == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if entry.conns <= 0 {
+		return
+	}
+	entry.conns--
+	if entry.conns > 0 {
+		return
+	}
+	if (entry.drop || entry.left.IsZero()) && s.entries[slot] == entry {
+		delete(s.entries, slot)
+	}
+}
+
 // ipSet returns the addresses of a user name; with create it makes them and
 // starts the sweeper, which therefore runs only on a server whose users
 // connect from a real address.

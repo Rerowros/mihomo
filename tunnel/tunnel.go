@@ -465,7 +465,7 @@ func handleUDPConn(packet C.PacketAdapter) {
 				}
 				defer func() {
 					if err != nil {
-						admission.Release()
+						admission.ReleaseFor(metadata.InSession)
 					}
 				}()
 			}
@@ -570,7 +570,7 @@ func handleTCPConn(connCtx C.ConnContext) {
 			log.Warnln("[Limit] inbound user %s/%s: %s", key.Inbound, key.User, err)
 			return
 		}
-		defer admission.Release() // the tracker owns it once created; Release is idempotent
+		defer admission.ReleaseFor(metadata.InSession) // the tracker owns it once created; ReleaseFor is idempotent
 	}
 
 	preHandleFailed := false

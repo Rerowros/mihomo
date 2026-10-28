@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/metacubex/mihomo/component/eventbus"
+	C "github.com/metacubex/mihomo/constant"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -323,4 +324,66 @@ func TestMaxIPsRejectedEvent(t *testing.T) {
 	assert.Equal(t, eventbus.UserLimit{
 		Inbound: inbound, User: "eve", Reason: RejectMaxIPs, Action: eventbus.LimitRejected, Remote: "[2001:db8::5]",
 	}, e.Data)
+}
+
+// A connection that passed the revoke check, then the forgetting of the
+// revoked addresses, then Admit, and is refused by the tracker as revoked
+// leaves no release window: the user given the name again with max-ips=1
+// connects at once from another address.
+func TestRevokedTrackerLeavesNoIPWindow(t *testing.T) {
+	m := newIPLimitManager()
+	key := UserKey{Inbound: "in", User: "u"}
+	m.Set(UserLimit{Inbound: "in", User: "u", MaxIPs: 1})
+
+	m.userManager().ForgetIPs(key)
+	admission, err := m.AdmitFrom(key, addr("198.51.100.1"))
+	require.NoError(t, err)
+	metadata := &C.Metadata{InName: key.Inbound, InUser: key.User, InSession: &testSession{revoked: true}}
+	_, err = NewTCPTrackerAdmitted(&trackerTestConn{}, DefaultManager, metadata, nil, 0, 0, true, admission)
+	require.ErrorIs(t, err, C.ErrInboundUserRevoked)
+
+	b, err := m.AdmitFrom(key, addr("198.51.100.2"))
+	require.NoError(t, err, "the revoked connection kept a max-ips place")
+	b.Release()
+}
+
+// A live session keeps the window: closing its tracker holds the place.
+func TestLiveTrackerKeepsIPWindow(t *testing.T) {
+	m := newIPLimitManager()
+	key := UserKey{Inbound: "in", User: "u"}
+	m.Set(UserLimit{Inbound: "in", User: "u", MaxIPs: 1})
+
+	admission, err := m.AdmitFrom(key, addr("198.51.100.1"))
+	require.NoError(t, err)
+	metadata := &C.Metadata{InName: key.Inbound, InUser: key.User, InSession: &testSession{}}
+	tracker, err := NewTCPTrackerAdmitted(&trackerTestConn{}, DefaultManager, metadata, nil, 0, 0, true, admission)
+	require.NoError(t, err)
+	require.NoError(t, tracker.Close())
+
+	_, err = m.AdmitFrom(key, addr("198.51.100.2"))
+	require.ErrorIs(t, err, ErrUserMaxIPs)
+}
+
+// Dropping a revoked connection never removes an address that other
+// connections still use, and does not restart the window of one that was in
+// it already.
+func TestRevokedReleaseKeepsSharedEntry(t *testing.T) {
+	m := newIPLimitManager()
+	key := UserKey{Inbound: "in", User: "u"}
+	m.Set(UserLimit{Inbound: "in", User: "u", MaxIPs: 1})
+	revoked := &testSession{revoked: true}
+
+	live, err := m.AdmitFrom(key, addr("198.51.100.1"))
+	require.NoError(t, err)
+	stale, err := m.AdmitFrom(key, addr("198.51.100.1"))
+	require.NoError(t, err)
+	stale.ReleaseFor(revoked)
+	assert.Equal(t, []string{"198.51.100.1"}, onlineIPStrings(m, "", "u"))
+
+	live.ReleaseFor(&testSession{}) // in the window now
+	stale, err = m.AdmitFrom(key, addr("198.51.100.1"))
+	require.NoError(t, err)
+	stale.ReleaseFor(revoked)
+	_, err = m.AdmitFrom(key, addr("198.51.100.2"))
+	require.ErrorIs(t, err, ErrUserMaxIPs, "a revoked connection ended the window of a live one")
 }
