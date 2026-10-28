@@ -237,6 +237,7 @@ func ParseProxy(mapping map[string]any, options ...ProxyOption) (C.Proxy, error)
 	if muxMapping, muxExist := mapping["smux"].(map[string]any); muxExist {
 		err = decoder.Decode(muxMapping, muxOption)
 		if err != nil {
+			_ = proxy.Close()
 			return nil, err
 		}
 	}
@@ -245,13 +246,21 @@ func ParseProxy(mapping map[string]any, options ...ProxyOption) (C.Proxy, error)
 	if muxMapping, muxExist := mapping["mux.cool"].(map[string]any); muxExist {
 		err = decoder.Decode(muxMapping, muxCoolOption)
 		if err != nil {
+			_ = proxy.Close()
 			return nil, err
 		}
 	}
 	if muxOption.Enabled && muxCoolOption.Enabled {
+		_ = proxy.Close()
 		return nil, fmt.Errorf("smux and mux.cool cannot be enabled together")
 	}
-	if muxCoolOption.Enabled && proxyType == "vless" {
+	if muxCoolOption.Enabled && proxyType != "vless" {
+		// Only the VLESS outbound sends the mux command for the
+		// v1.mux.cool carrier; other outbounds would dial it as a host.
+		_ = proxy.Close()
+		return nil, fmt.Errorf("mux.cool is only supported for vless proxies, not %s", proxyType)
+	}
+	if muxCoolOption.Enabled {
 		// Vision splices the inner TLS of a single TCP connection, while a
 		// mux.cool carrier holds many sessions; a Vision server breaks mux
 		// connections that contain TCP sessions.
@@ -261,16 +270,20 @@ func ParseProxy(mapping map[string]any, options ...ProxyOption) (C.Proxy, error)
 		}
 	}
 	if muxOption.Enabled {
-		proxy, err = outbound.NewSingMux(*muxOption, proxy)
+		wrapped, err := outbound.NewSingMux(*muxOption, proxy)
 		if err != nil {
+			_ = proxy.Close()
 			return nil, err
 		}
+		proxy = wrapped
 	}
 	if muxCoolOption.Enabled || muxCoolOption.MaxConcurrency < 0 || muxCoolOption.MaxConnections < 0 || muxCoolOption.MaxCarriers < 0 || muxCoolOption.XUDPConcurrency < 0 {
-		proxy, err = outbound.NewMuxCool(*muxCoolOption, proxy)
+		wrapped, err := outbound.NewMuxCool(*muxCoolOption, proxy)
 		if err != nil {
+			_ = proxy.Close()
 			return nil, err
 		}
+		proxy = wrapped
 	}
 
 	proxy = outbound.NewAutoCloseProxyAdapter(proxy)

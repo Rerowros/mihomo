@@ -38,7 +38,7 @@ func TestParseProxyMuxCoolConfigurations(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			mapping := map[string]any{"name": "test", "type": "direct"}
+			mapping := vlessMapping(nil)
 			if tt.muxCool != nil {
 				mapping["mux.cool"] = tt.muxCool
 			}
@@ -74,37 +74,50 @@ func TestParseProxyRejectsInvalidMuxCoolConfigurations(t *testing.T) {
 	}{
 		{
 			name:    "negative concurrency",
-			mapping: map[string]any{"name": "test", "type": "direct", "mux.cool": map[string]any{"enabled": true, "max-concurrency": -1}},
+			mapping: vlessMapping(map[string]any{"mux.cool": map[string]any{"enabled": true, "max-concurrency": -1}}),
 			match:   "max-concurrency",
 		},
 		{
 			name:    "negative connections",
-			mapping: map[string]any{"name": "test", "type": "direct", "mux.cool": map[string]any{"enabled": true, "max-connections": -1}},
+			mapping: vlessMapping(map[string]any{"mux.cool": map[string]any{"enabled": true, "max-connections": -1}}),
 			match:   "max-connections",
 		},
 		{
 			name:    "negative carriers",
-			mapping: map[string]any{"name": "test", "type": "direct", "mux.cool": map[string]any{"enabled": true, "max-carriers": -1}},
+			mapping: vlessMapping(map[string]any{"mux.cool": map[string]any{"enabled": true, "max-carriers": -1}}),
 			match:   "max-carriers",
 		},
 		{
 			name:    "negative xudp concurrency",
-			mapping: map[string]any{"name": "test", "type": "direct", "mux.cool": map[string]any{"enabled": true, "xudp-concurrency": -1}},
+			mapping: vlessMapping(map[string]any{"mux.cool": map[string]any{"enabled": true, "xudp-concurrency": -1}}),
 			match:   "xudp-concurrency",
 		},
 		{
 			name:    "unknown udp 443 policy",
-			mapping: map[string]any{"name": "test", "type": "direct", "mux.cool": map[string]any{"enabled": true, "xudp-proxy-udp443": "drop"}},
+			mapping: vlessMapping(map[string]any{"mux.cool": map[string]any{"enabled": true, "xudp-proxy-udp443": "drop"}}),
 			match:   "xudp-proxy-udp443",
 		},
 		{
 			name: "smux conflict",
-			mapping: map[string]any{
-				"name": "test", "type": "direct",
+			mapping: vlessMapping(map[string]any{
 				"smux":     map[string]any{"enabled": true},
 				"mux.cool": map[string]any{"enabled": true},
-			},
+			}),
 			match: "cannot be enabled together",
+		},
+		{
+			name:    "not vless",
+			mapping: map[string]any{"name": "test", "type": "direct", "mux.cool": map[string]any{"enabled": true}},
+			match:   "only supported for vless",
+		},
+		{
+			name: "vmess",
+			mapping: map[string]any{
+				"name": "test", "type": "vmess", "server": "127.0.0.1", "port": 443,
+				"uuid": "b831381d-6324-4d53-ad4f-8cda48b30811", "alterId": 0, "cipher": "auto",
+				"mux.cool": map[string]any{"enabled": true},
+			},
+			match: "only supported for vless",
 		},
 	}
 

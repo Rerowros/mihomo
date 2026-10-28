@@ -489,6 +489,7 @@ proxies: # socks5
       # only-tcp: false # 如果设置为 true, smux 的设置将不会对 udp 生效，udp 连接会直接走底层协议
 
     # mux.cool is Xray-compatible multiplexing and is separate from smux above. Do not enable both.
+    # Only for type: vless, without flow xtls-rprx-vision. UDP still requires udp: true on the proxy.
     # It carries TCP streams and UDP/XUDP packet sessions over shared TCP carriers.
     # Packet loss can cause head-of-line blocking for every logical session on the carrier.
     mux.cool:
