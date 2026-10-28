@@ -11,7 +11,7 @@ import (
 
 // UnixSocketModeEnv overrides the file mode of the external controller unix socket.
 // The value is an octal permission mask, e.g. "0660" to also allow the owner's group.
-const UnixSocketModeEnv = "CITRUS_UNIX_SOCKET_MODE"
+const UnixSocketModeEnv = "CLASH_UNIX_SOCKET_MODE"
 
 // defaultUnixSocketMode only allows the user the core runs as to connect.
 const defaultUnixSocketMode fs.FileMode = 0o600
