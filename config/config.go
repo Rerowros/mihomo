@@ -831,14 +831,19 @@ func parseController(cfg *RawConfig) (*Controller, error) {
 	if uiName := cfg.ExternalUIName; uiName != "" && !filepath.IsLocal(uiName) {
 		return nil, fmt.Errorf("external UI name is not local: %s", uiName)
 	}
-	if err := CheckExternalUI(cfg.ExternalUI, cfg.ExternalUIName); err != nil {
-		return nil, err
+	// A directory that holds the core files does not fail the config (a
+	// subscription may carry external-ui: ./, the client keeps it): the UI is
+	// turned off, so /ui does not serve it and the UI update does not empty it.
+	externalUI, externalUIName := cfg.ExternalUI, cfg.ExternalUIName
+	if err := CheckExternalUI(externalUI, externalUIName); err != nil {
+		log.Warnln("External UI disabled: %s", err)
+		externalUI, externalUIName = "", ""
 	}
 	return &Controller{
 		ExternalController:            cfg.ExternalController,
-		ExternalUI:                    cfg.ExternalUI,
+		ExternalUI:                    externalUI,
 		ExternalUIURL:                 cfg.ExternalUIURL,
-		ExternalUIName:                cfg.ExternalUIName,
+		ExternalUIName:                externalUIName,
 		Secret:                        cfg.Secret,
 		ExternalControllerRoutingMark: cfg.ExternalControllerRoutingMark,
 		ExternalControllerPipe:        cfg.ExternalControllerPipe,
