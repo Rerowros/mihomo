@@ -211,7 +211,7 @@ func startTLS(cfg *Config) {
 		}
 
 		log.Infoln("RESTful API tls listening at: %s", l.Addr().String())
-		tlsConfig := &tls.Config{Time: ntp.Now}
+		tlsConfig := &tls.Config{Time: ntp.Now, MinVersion: tls.VersionTLS12}
 		tlsConfig.NextProtos = []string{"h2", "http/1.1"}
 		tlsConfig.GetCertificate = func(*tls.ClientHelloInfo) (*tls.Certificate, error) {
 			return certLoader()
