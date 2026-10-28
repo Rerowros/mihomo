@@ -6,6 +6,7 @@ import (
 	"io"
 	"net"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/metacubex/mihomo/adapter/inbound"
@@ -299,6 +300,9 @@ func (l *Listener) HandleConn(conn net.Conn, tunnel C.Tunnel, additions ...inbou
 func (l *Listener) handleConn(inMux bool, conn net.Conn, tunnel C.Tunnel, additions ...inbound.Addition) {
 	if inMux {
 		defer conn.Close()
+		// a mux stream must send its command and target in time too; the
+		// outer conn's deadline was lifted when the session started
+		setHandshakeDeadline(conn)
 	}
 
 	command, err := socks5.ReadByte(conn)
@@ -326,9 +330,10 @@ func (l *Listener) handleConn(inMux bool, conn net.Conn, tunnel C.Tunnel, additi
 			//log.Warnln("read crlf error: %s", err.Error())
 			return
 		}
-		// the header is read: lift the handshake deadline set by HandleConn
-		clearHandshakeDeadline(conn)
 	}
+	// the header is read: lift the handshake deadline set by HandleConn, or
+	// above for a mux stream
+	clearHandshakeDeadline(conn)
 
 	switch command {
 	case trojan.CommandTCP:
@@ -371,12 +376,23 @@ func (l *Listener) handleConn(inMux bool, conn net.Conn, tunnel C.Tunnel, additi
 			return
 		}
 		defer session.Close()
+		var streams atomic.Int32
 		for {
 			stream, err := session.AcceptStream()
 			if err != nil {
 				return
 			}
-			go l.handleConn(true, stream, tunnel, additions...)
+			if streams.Load() >= int32(maxMuxStreams) {
+				// too many open streams: refuse this one (the client sees it
+				// closed) rather than stall the session or spawn more
+				_ = stream.Close()
+				continue
+			}
+			streams.Add(1)
+			go func() {
+				defer streams.Add(-1)
+				l.handleConn(true, stream, tunnel, additions...)
+			}()
 		}
 	}
 }
