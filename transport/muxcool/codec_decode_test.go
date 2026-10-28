@@ -83,6 +83,20 @@ func TestDecodeFramePooledKeepsStructuredIP(t *testing.T) {
 	}
 }
 
+// v2fly clients, and Xray when the request has no UDP source, send New UDP
+// data frames without GlobalID; Xray reads them as plain UDP.
+func TestDecodeFrameAcceptsNewUDPWithoutGlobalID(t *testing.T) {
+	raw := []byte{0, 12, 0, 1, 1, 1, 2, 0, 53, 1, 8, 8, 8, 8, 0, 2, 'h', 'i'}
+	got, err := DecodeFrame(bytes.NewReader(raw))
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got.Status != StatusNew || got.Network != NetworkUDP || got.Port != 53 ||
+		socksaddrFromFrame(got).Addr != netip.MustParseAddr("8.8.8.8") || got.GlobalID != [8]byte{} || string(got.Payload) != "hi" {
+		t.Fatalf("frame = %+v", got)
+	}
+}
+
 func TestDecodeFrameRejectsMalformedInput(t *testing.T) {
 	tests := []struct {
 		name string
@@ -99,7 +113,6 @@ func TestDecodeFrameRejectsMalformedInput(t *testing.T) {
 		{name: "truncated domain", raw: []byte{0, 10, 0, 1, 1, 0, 1, 0, 80, 2, 4, 'a'}},
 		{name: "missing payload length", raw: []byte{0, 4, 0, 1, 2, 1}},
 		{name: "truncated payload", raw: []byte{0, 4, 0, 1, 2, 1, 0, 4, 'a'}},
-		{name: "new UDP data missing GlobalID", raw: []byte{0, 12, 0, 1, 1, 1, 2, 0, 53, 1, 1, 2, 3, 4, 0, 1, 'x'}},
 		{name: "new UDP data partial GlobalID", raw: []byte{0, 16, 0, 1, 1, 1, 2, 0, 53, 1, 1, 2, 3, 4, 1, 2, 3, 4, 0, 1, 'x'}},
 		{name: "keep UDP trailing metadata", raw: []byte{0, 13, 0, 1, 2, 1, 2, 0, 53, 1, 1, 2, 3, 4, 0, 0xff, 0, 1, 'x'}},
 		{name: "keep TCP target", raw: []byte{0, 12, 0, 1, 2, 1, 1, 0, 53, 1, 1, 2, 3, 4, 0, 1, 'x'}},

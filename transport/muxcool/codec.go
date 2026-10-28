@@ -290,7 +290,10 @@ func decodeFrameWithPayloadPool(r io.Reader, metadataBuffer []byte, poolPayload 
 			frame.Destination = host
 			frame.DestinationIP = address
 			targetBytes = targetBytes[3+consumed:]
-			if frame.Status == StatusNew && frame.Network == NetworkUDP && frame.Option&OptionData != 0 {
+			// GlobalID is optional: v2fly clients and Xray without a UDP
+			// source send none, which means plain UDP (GlobalID zero), as
+			// in Xray common/mux/frame.go Unmarshal.
+			if frame.Status == StatusNew && frame.Network == NetworkUDP && frame.Option&OptionData != 0 && len(targetBytes) != 0 {
 				if len(targetBytes) != len(frame.GlobalID) {
 					return decodedFrame{}, protocolError("decode GlobalID", fmt.Errorf("invalid length %d", len(targetBytes)))
 				}
