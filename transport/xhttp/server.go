@@ -328,8 +328,10 @@ func (h *requestHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// packet-up upload: POST /path/{session}/{seq}
-	if r.Method != http.MethodGet && sessionId != "" && seqStr != "" && h.allowPacketUpUpload() {
+	// packet-up upload: POST, or GET with the payload in headers/cookies, to
+	// /path/{session}/{seq}. A GET without a seq is the download request below,
+	// so the method alone does not distinguish the two.
+	if sessionId != "" && seqStr != "" && h.allowPacketUpUpload() {
 		scMaxEachPostBytes := h.scMaxEachPostBytes.Max
 		dataPlacement := h.config.GetNormalizedUplinkDataPlacement()
 		uplinkDataKey := h.config.UplinkDataKey
