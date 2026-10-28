@@ -16,6 +16,7 @@ type VlessOption struct {
 	WsPath          string        `inbound:"ws-path,omitempty"`
 	XHTTPConfig     XHTTPConfig   `inbound:"xhttp-config,omitempty"`
 	GrpcServiceName string        `inbound:"grpc-service-name,omitempty"`
+	FallbackPage    string        `inbound:"fallback-page,omitempty"`
 	Certificate     string        `inbound:"certificate,omitempty"`
 	PrivateKey      string        `inbound:"private-key,omitempty"`
 	ClientAuthType  string        `inbound:"client-auth-type,omitempty"`
@@ -97,7 +98,7 @@ type Vless struct {
 }
 
 func NewVless(options *VlessOption) (*Vless, error) {
-	base, err := NewBase(&options.BaseOption)
+	base, err := newStreamBase(&options.BaseOption)
 	if err != nil {
 		return nil, err
 	}
@@ -120,6 +121,7 @@ func NewVless(options *VlessOption) (*Vless, error) {
 			WsPath:          options.WsPath,
 			XHTTPConfig:     options.XHTTPConfig.Build(),
 			GrpcServiceName: options.GrpcServiceName,
+			FallbackPage:    options.FallbackPage,
 			Certificate:     options.Certificate,
 			PrivateKey:      options.PrivateKey,
 			ClientAuthType:  options.ClientAuthType,

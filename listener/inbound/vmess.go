@@ -47,7 +47,7 @@ type Vmess struct {
 }
 
 func NewVmess(options *VmessOption) (*Vmess, error) {
-	base, err := NewBase(&options.BaseOption)
+	base, err := newStreamBase(&options.BaseOption)
 	if err != nil {
 		return nil, err
 	}
