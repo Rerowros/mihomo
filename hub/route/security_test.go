@@ -120,6 +120,36 @@ func TestBrowserGuard(t *testing.T) {
 	}
 }
 
+// Only the DoH path itself and what lies below it skip the guard: a DoH path
+// that is a prefix of an API path must not uncover the API.
+func TestBrowserGuardDohPathExact(t *testing.T) {
+	ok := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {})
+	for _, tc := range []struct {
+		doh, path string
+		want      int
+	}{
+		{"/c", "/c", http.StatusOK},
+		{"/c", "/c/", http.StatusOK},
+		{"/c", "/configs", http.StatusForbidden},
+		{"/c", "/connections", http.StatusForbidden},
+		{"/c", "/cache/fakeip/flush", http.StatusForbidden},
+		{"/dns-query", "/dns-query", http.StatusOK},
+		{"/dns-query/", "/dns-query/x", http.StatusOK},
+		{"/dns-query", "/dns-query-x", http.StatusForbidden},
+		{"", "/configs", http.StatusForbidden},
+	} {
+		h := browserGuard(ok, nil, tc.doh)
+		req := httptest.NewRequest(http.MethodGet, tc.path, nil)
+		req.Host = "127.0.0.1:9090"
+		req.Header.Set("Origin", "https://evil.example.com")
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		if rec.Code != tc.want {
+			t.Errorf("doh %q path %q: got %d, want %d", tc.doh, tc.path, rec.Code, tc.want)
+		}
+	}
+}
+
 func TestConnectionsIntervalRejectedBeforeUpgrade(t *testing.T) {
 	for _, interval := range []string{"0", "-5", "abc", "99999999999999999999", "3600001"} {
 		req := httptest.NewRequest(http.MethodGet, "/connections?interval="+interval, nil)
@@ -220,6 +250,37 @@ func TestReCreateServerAppliesSecretRotation(t *testing.T) {
 	}
 }
 
+// A controller that could not bind its port is retried by the next reload
+// with the same configuration instead of being skipped as unchanged.
+func TestReCreateServerRetriesFailedListener(t *testing.T) {
+	busy, err := stdnet.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := busy.Addr().String()
+	t.Cleanup(func() {
+		_ = busy.Close()
+		ReCreateServer(&Config{})
+		serverMu.Lock()
+		applied = nil
+		serverMu.Unlock()
+	})
+
+	ReCreateServer(&Config{Addr: addr, Secret: testSecret})
+	serverMu.Lock()
+	started := httpServer != nil
+	serverMu.Unlock()
+	if started {
+		t.Fatal("controller started on a port that is taken")
+	}
+
+	_ = busy.Close()
+	ReCreateServer(&Config{Addr: addr, Secret: testSecret})
+	if code := tokenStatus(t, addr, testSecret); code != http.StatusOK {
+		t.Fatalf("controller after the port was freed: got %d, want 200", code)
+	}
+}
+
 func isTimeout(err error) bool {
 	var ne stdnet.Error
 	if e, ok := err.(stdnet.Error); ok {
@@ -241,6 +302,29 @@ func TestReCreateServerRefusesInsecure(t *testing.T) {
 	serverMu.Unlock()
 	if started {
 		t.Fatal("controller on all interfaces without a secret was started")
+	}
+}
+
+// PUT /configs follows the startup rule: an external-ui that holds the core
+// files turns the UI off instead of failing the request.
+func TestUpdateConfigsCoreDirectoryExternalUI(t *testing.T) {
+	prev := loadControllerReloader()
+	t.Cleanup(func() { SetControllerReloader(prev) })
+	var got *config.Config
+	SetControllerReloader(func(cfg *config.Config) (func(), error) {
+		got = cfg
+		return nil, fmt.Errorf("stop before apply")
+	})
+
+	body := `{"payload": "external-ui: .\nrules:\n  - MATCH,DIRECT\n"}`
+	req := httptest.NewRequest(http.MethodPut, "/configs", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	updateConfigs(rec, req)
+	if got == nil {
+		t.Fatalf("config with external-ui: . refused: %d %q", rec.Code, rec.Body.String())
+	}
+	if got.Controller.ExternalUI != "" {
+		t.Errorf("external-ui = %q, want the UI off", got.Controller.ExternalUI)
 	}
 }
 

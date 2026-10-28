@@ -95,6 +95,15 @@ func (c *Config) Validate() error {
 	return errors.Join(c.checkTCP(), c.checkTLS())
 }
 
+// isDohPath reports whether path is the DoH path or below it. A plain prefix
+// match would let a DoH path "/c" uncover /configs and /connections.
+func isDohPath(path, dohPath string) bool {
+	if len(dohPath) == 0 || dohPath[0] != '/' {
+		return false
+	}
+	return path == dohPath || strings.HasPrefix(path, strings.TrimSuffix(dohPath, "/")+"/")
+}
+
 // browserGuard protects a tcp or tls controller without a secret from web
 // pages: with a wildcard CORS policy (the default) any site could otherwise
 // read and change it through the browser of its user, and DNS rebinding gets
@@ -106,7 +115,7 @@ func (c *Config) Validate() error {
 // are not affected. The DoH path, public by design, is left out.
 func browserGuard(next http.Handler, allowOrigins []string, dohPath string) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if len(dohPath) > 0 && dohPath[0] == '/' && strings.HasPrefix(r.URL.Path, dohPath) {
+		if isDohPath(r.URL.Path, dohPath) {
 			next.ServeHTTP(w, r)
 			return
 		}
