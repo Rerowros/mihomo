@@ -26,7 +26,6 @@ const (
 var (
 	ErrServerClosed       = errors.New("mux.cool server is closed")
 	ErrDuplicateSessionID = errors.New("mux.cool duplicate session ID")
-	ErrSessionQueueFull   = errors.New("mux.cool session receive queue is full")
 )
 
 type ServerHandler interface {
@@ -258,6 +257,11 @@ func (c *serverCarrier) handleFrame(frame decodedFrame) error {
 		}
 		if frame.Status == StatusEnd {
 			frame.releasePayload()
+			if stream, ok := session.(*serverStream); ok && frame.Option&OptionError == 0 {
+				// Deliver uplink data still queued for a slow target first.
+				stream.closeInput()
+				return nil
+			}
 			session.finish(remoteFrameError(frame.Frame), false)
 			return nil
 		}

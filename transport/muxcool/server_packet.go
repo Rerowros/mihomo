@@ -165,8 +165,9 @@ func (f *serverPacketFlow) enqueue(attachment *serverPacketAttachment, frame dec
 		message.release()
 		return f.terminalError()
 	default:
+		// UDP is lossy: drop the datagram, keep the session and XUDP flow.
 		message.release()
-		return ErrSessionQueueFull
+		return nil
 	}
 }
 

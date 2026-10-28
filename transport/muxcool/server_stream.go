@@ -29,6 +29,8 @@ type serverStream struct {
 	client      net.Conn
 	peer        net.Conn
 	input       chan serverStreamMessage
+	inputEnd    chan struct{}
+	inputOnce   sync.Once
 	done        chan struct{}
 	closeOnce   sync.Once
 }
@@ -42,6 +44,7 @@ func newServerStream(carrier *serverCarrier, id uint16, destination M.Socksaddr)
 		client:      client,
 		peer:        peer,
 		input:       make(chan serverStreamMessage, serverStreamQueueSize),
+		inputEnd:    make(chan struct{}),
 		done:        make(chan struct{}),
 	}
 }
@@ -62,16 +65,26 @@ func (s *serverStream) deliverDecodedFrame(frame decodedFrame) error {
 		frame.releasePayload()
 		return nil
 	}
+	select {
+	case <-s.inputEnd:
+		// Data after the client's End is discarded, as in Xray.
+		frame.releasePayload()
+		return nil
+	default:
+	}
 	message := serverStreamMessage{payload: frame.Payload, payloadPooled: frame.payloadPooled}
+	// A full queue means the target is slower than the client. Block the
+	// carrier reader (backpressure, as Xray and the old io.Pipe path did)
+	// instead of failing the stream.
 	select {
 	case s.input <- message:
 		return nil
 	case <-s.done:
 		message.release()
 		return net.ErrClosed
-	default:
+	case <-s.carrier.ctx.Done():
 		message.release()
-		return ErrSessionQueueFull
+		return net.ErrClosed
 	}
 }
 
@@ -85,8 +98,36 @@ func (s *serverStream) writeInput() {
 				s.finish(err, true)
 				return
 			}
+		case <-s.inputEnd:
+			s.flushInput()
+			return
 		case <-s.done:
 			s.releaseQueued()
+			return
+		}
+	}
+}
+
+// closeInput handles a graceful End from the client: data already queued is
+// still written to the target, then the stream closes (Xray closes the
+// uplink writer and interrupts the downlink the same way).
+func (s *serverStream) closeInput() {
+	s.inputOnce.Do(func() { close(s.inputEnd) })
+}
+
+func (s *serverStream) flushInput() {
+	for {
+		select {
+		case message := <-s.input:
+			err := writeFull(s.peer, message.payload)
+			message.release()
+			if err != nil {
+				s.finish(err, false)
+				s.releaseQueued()
+				return
+			}
+		default:
+			s.finish(io.EOF, false)
 			return
 		}
 	}
