@@ -267,18 +267,23 @@ func (h *requestHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	h.config.ApplyXPaddingToResponse(w, config)
 
+	paddingValue, _ := h.config.ExtractXPaddingFromRequest(r, h.config.XPaddingObfsMode)
+	paddingValid := h.config.IsPaddingValid(paddingValue, h.xPaddingBytes.Min, h.xPaddingBytes.Max, PaddingMethod(h.config.XPaddingMethod))
+	// No XHTTP client sends a request without its padding: a stranger gets the fallback, an
+	// OPTIONS too, before its 200 with the CORS and padding headers that would tell XHTTP
+	// apart. Only a browser's own CORS preflight goes without padding, and the browser dialer
+	// is no client of an inbound with a fallback-page.
+	if !paddingValid && h.fallback != nil {
+		h.notFound(w, r)
+		return
+	}
+
 	if r.Method == "OPTIONS" {
 		w.WriteHeader(http.StatusOK)
 		return
 	}
 
-	paddingValue, _ := h.config.ExtractXPaddingFromRequest(r, h.config.XPaddingObfsMode)
-	if !h.config.IsPaddingValid(paddingValue, h.xPaddingBytes.Min, h.xPaddingBytes.Max, PaddingMethod(h.config.XPaddingMethod)) {
-		// No XHTTP client sends a request without its padding: a stranger gets the fallback.
-		if h.fallback != nil {
-			h.notFound(w, r)
-			return
-		}
+	if !paddingValid {
 		http.Error(w, "invalid xpadding", http.StatusBadRequest)
 		return
 	}

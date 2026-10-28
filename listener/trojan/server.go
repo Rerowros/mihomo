@@ -21,6 +21,7 @@ import (
 	"github.com/metacubex/mihomo/listener/restls"
 	"github.com/metacubex/mihomo/listener/shadowtls"
 	"github.com/metacubex/mihomo/listener/sing"
+	"github.com/metacubex/mihomo/log"
 	"github.com/metacubex/mihomo/ntp"
 	"github.com/metacubex/mihomo/transport/gun"
 	"github.com/metacubex/mihomo/transport/shadowsocks/core"
@@ -168,6 +169,8 @@ func New(config LC.TrojanServer, lc C.InboundListenConfig, tunnel C.Tunnel, addi
 		if page, err = fallback.Page(config.FallbackPage); err != nil {
 			return nil, err
 		}
+	} else if config.FallbackPage != "" {
+		log.Warnln("Trojan inbound %s: fallback-page is ignored without ws-path or grpc-service-name", config.Listen)
 	}
 	if config.WsPath != "" {
 		httpServer.Handler = fallback.WebSocket(config.WsPath, page, func(w http.ResponseWriter, r *http.Request) {

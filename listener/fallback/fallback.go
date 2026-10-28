@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strconv"
 	"strings"
 
 	C "github.com/metacubex/mihomo/constant"
@@ -39,15 +40,29 @@ func Page(file string) (http.Handler, error) {
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/" && r.URL.Path != "/index.html" || r.Method != http.MethodGet && r.Method != http.MethodHead {
-			http.NotFound(w, r)
+			write(w, r, http.StatusNotFound, "text/plain; charset=utf-8", notFound)
 			return
 		}
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		w.WriteHeader(http.StatusOK)
-		if r.Method != http.MethodHead {
-			_, _ = w.Write(page)
-		}
+		write(w, r, http.StatusOK, "text/html; charset=utf-8", page)
 	}), nil
+}
+
+// notFound is the body of http.NotFound.
+var notFound = []byte("404 page not found\n")
+
+// write answers with body and its Content-Length, to HEAD as to GET, as a web server does:
+// left to net/http, a body past its buffer goes out chunked and a HEAD without the length.
+func write(w http.ResponseWriter, r *http.Request, code int, contentType string, body []byte) {
+	h := w.Header()
+	h.Set("Content-Type", contentType)
+	h.Set("Content-Length", strconv.Itoa(len(body)))
+	if code == http.StatusNotFound {
+		h.Set("X-Content-Type-Options", "nosniff")
+	}
+	w.WriteHeader(code)
+	if r.Method != http.MethodHead {
+		_, _ = w.Write(body)
+	}
 }
 
 // WebSocket is the handler of an inbound's WebSocket path, ws, with page (nil: none) for
