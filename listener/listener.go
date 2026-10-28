@@ -23,6 +23,7 @@ import (
 	"github.com/metacubex/mihomo/listener/tuic"
 	LT "github.com/metacubex/mihomo/listener/tunnel"
 	"github.com/metacubex/mihomo/log"
+	"github.com/metacubex/mihomo/tunnel/statistic"
 
 	"github.com/samber/lo"
 )
@@ -717,8 +718,21 @@ func UpdateInboundUsers(name string, update func([]C.InboundUser) ([]C.InboundUs
 		return C.InboundUserChange{}, err
 	}
 	change, err := manager.SetUsers(users)
+	forgetRevokedIPs(name, change, err)
 	publishUserRevoked(name, change, err)
 	return change, err
+}
+
+// forgetRevokedIPs drops the client addresses of the users of inbound name
+// that a runtime update revoked, so a user given a new key does not start with
+// the max-ips places of the old one taken.
+func forgetRevokedIPs(name string, change C.InboundUserChange, err error) {
+	if err != nil {
+		return
+	}
+	for _, user := range change.Revoked {
+		statistic.DefaultUserManager.ForgetIPs(statistic.UserKey{Inbound: name, User: user})
+	}
 }
 
 // publishUserRevoked reports the users of inbound name that a runtime update
@@ -766,6 +780,7 @@ func SetInboundUsers(name string, users []C.InboundUser) (C.InboundUserChange, e
 		return C.InboundUserChange{}, C.ErrInboundNoUserTable
 	}
 	change, err := manager.SetUsers(users)
+	forgetRevokedIPs(name, change, err)
 	publishUserRevoked(name, change, err)
 	return change, err
 }
