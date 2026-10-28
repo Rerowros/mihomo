@@ -292,16 +292,18 @@ func pointerOrDefaultTuicServer(p *tuicServerSchema, def LC.TuicServer) LC.TuicS
 		if p.Listen != nil {
 			def.Listen = *p.Listen
 		}
+		// GET /configs masks the credentials: a masked value sent back
+		// keeps the current one.
 		if p.Token != nil {
-			def.Token = *p.Token
+			def.Token = restoreTokens(*p.Token, def.Token)
 		}
 		if p.Users != nil {
-			def.Users = *p.Users
+			def.Users = restoreUsers(*p.Users, def.Users)
 		}
 		if p.Certificate != nil {
 			def.Certificate = *p.Certificate
 		}
-		if p.PrivateKey != nil {
+		if p.PrivateKey != nil && *p.PrivateKey != redacted {
 			def.PrivateKey = *p.PrivateKey
 		}
 		if p.CongestionController != nil {
@@ -370,6 +372,12 @@ func patchConfigs(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ports := listener.GetPorts()
+	if general.ShadowSocksConfig != nil {
+		*general.ShadowSocksConfig = restoreJSONString(*general.ShadowSocksConfig, ports.ShadowSocksConfig)
+	}
+	if general.VmessConfig != nil {
+		*general.VmessConfig = restoreJSONString(*general.VmessConfig, ports.VmessConfig)
+	}
 
 	listener.ReCreateHTTP(pointerOrDefault(general.Port, ports.Port), tunnel.Tunnel)
 	listener.ReCreateSocks(pointerOrDefault(general.SocksPort, ports.SocksPort), tunnel.Tunnel)

@@ -94,3 +94,85 @@ func TestGetConfigsHasNoSecret(t *testing.T) {
 		t.Errorf("GET /configs contains the controller secret: %s", rec.Body.String())
 	}
 }
+
+// A dashboard that reads GET /configs and sends it back with PATCH /configs
+// must not overwrite the credentials with the mask.
+func TestPatchConfigsKeepsRedactedCredentials(t *testing.T) {
+	ss := LC.ShadowsocksServer{
+		Enable:   true,
+		Listen:   "0.0.0.0:8388",
+		Password: "server-ipsk",
+		Cipher:   "2022-blake3-aes-128-gcm",
+	}
+	tuic := LC.TuicServer{
+		Enable:      true,
+		Listen:      "0.0.0.0:443",
+		Token:       []string{"tuic-token"},
+		Users:       map[string]string{"user-1": "tuic-pass"},
+		Certificate: "cert.pem",
+		PrivateKey:  "tuic-private-key",
+	}
+	g := &config.General{Inbound: config.Inbound{
+		TuicServer:        tuic,
+		ShadowSocksConfig: ss.String(),
+	}}
+	g.TuicServer.Token = append([]string(nil), tuic.Token...)
+	g.TuicServer.Users = map[string]string{"user-1": "tuic-pass"}
+	redactGeneral(g)
+	body, err := json.Marshal(g)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var patch configSchema
+	if err := json.Unmarshal(body, &patch); err != nil {
+		t.Fatal(err)
+	}
+
+	got := pointerOrDefaultTuicServer(patch.TuicServer, tuic)
+	if len(got.Token) != 1 || got.Token[0] != "tuic-token" {
+		t.Errorf("tuic token = %q, want the current one", got.Token)
+	}
+	if got.Users["user-1"] != "tuic-pass" {
+		t.Errorf("tuic users = %v, want the current password", got.Users)
+	}
+	if got.PrivateKey != "tuic-private-key" {
+		t.Errorf("tuic private-key = %q, want the current one", got.PrivateKey)
+	}
+	if got := restoreJSONString(*patch.ShadowSocksConfig, ss.String()); got != ss.String() {
+		t.Errorf("ss-config = %q, want the current %q", got, ss.String())
+	}
+
+	// New values next to masked ones: the new ones apply, the masked ones keep
+	// the current value, a masked value without a current one is dropped.
+	edited := &tuicServerSchema{
+		Enable:     true,
+		Token:      &[]string{redacted, "new-token", redacted},
+		Users:      &map[string]string{"user-1": redacted, "user-2": "pass-2", "user-3": redacted},
+		PrivateKey: new(string),
+	}
+	*edited.PrivateKey = "new-key"
+	got = pointerOrDefaultTuicServer(edited, tuic)
+	if strings.Join(got.Token, ",") != "tuic-token,new-token" {
+		t.Errorf("edited tuic token = %q", got.Token)
+	}
+	if len(got.Users) != 2 || got.Users["user-1"] != "tuic-pass" || got.Users["user-2"] != "pass-2" {
+		t.Errorf("edited tuic users = %v", got.Users)
+	}
+	if got.PrivateKey != "new-key" {
+		t.Errorf("edited tuic private-key = %q", got.PrivateKey)
+	}
+	moved := strings.Replace(*patch.ShadowSocksConfig, "0.0.0.0:8388", "0.0.0.0:9388", 1)
+	restored := restoreJSONString(moved, ss.String())
+	if !strings.Contains(restored, "0.0.0.0:9388") || !strings.Contains(restored, "server-ipsk") || strings.Contains(restored, redacted) {
+		t.Errorf("edited ss-config = %q, want the new listen and the current password", restored)
+	}
+
+	// Values without the mask are applied as they are.
+	if got := restoreJSONString(`{"password":"p"}`, ss.String()); got != `{"password":"p"}` {
+		t.Errorf("plain ss-config = %q", got)
+	}
+	// A mask that matches nothing keeps the running configuration.
+	if got := restoreJSONString(`{"other":"`+redacted+`"}`, ss.String()); got != ss.String() {
+		t.Errorf("unmatched mask in ss-config = %q, want the current one", got)
+	}
+}
