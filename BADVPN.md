@@ -2,7 +2,7 @@
 
 Эта ветка (`bpn/<тег mihomo>`) — ядро mihomo для Android-клиента BadVPN. Это тег upstream [MetaCubeX/mihomo](https://github.com/MetaCubeX/mihomo) плюс небольшой набор патчей ниже. Больше ничего не меняется.
 
-*English summary: MetaCubeX/mihomo tag + a small patch set for REALITY compatibility with current Xray-core (client version 26.10.21, empty fingerprint → chrome, optional `reality-opts.client-version`; X25519MLKEM768: the first handshake to a server is classic, then the core learns per server and public key whether it needs ML-KEM (Xray >= 26.9.8), `reality-opts.support-x25519mlkem768: true` forces it, `reality-opts.mlkem-client-fingerprint` switches the fingerprint for the ML-KEM handshake) and metacubex/utls `v1.9.0-mod-meta` (Firefox 148 / Safari 26.3). XHTTP packet-up (P5+P8) sends uploads in parallel, frees the write slot at WroteRequest and bounds the unanswered seqs with a 24-slot window. Xdrive (P9) is a byte-compatible port of the Xray-core cloud-storage transport, client and server. P10 adds the server-node pieces: per-user traffic counters with `/traffic/users`, a small idle relay buffer, a lazy BufferedConn reader, a server GC ballast and pre-auth XHTTP session limits. Not affiliated with MetaCubeX; please do not report issues from this build upstream.*
+*English summary: MetaCubeX/mihomo tag + a small patch set for REALITY compatibility with current Xray-core (client version 26.10.21, empty fingerprint → chrome, optional `reality-opts.client-version`; X25519MLKEM768: the first handshake to a server is classic, then the core learns per server and public key whether it needs ML-KEM (Xray >= 26.9.8), `reality-opts.support-x25519mlkem768: true` forces it, `reality-opts.mlkem-client-fingerprint` switches the fingerprint for the ML-KEM handshake) and metacubex/utls `v1.9.0-mod-meta` (Firefox 148 / Safari 26.3). XHTTP packet-up (P5+P8) sends uploads in parallel, frees the write slot at WroteRequest and bounds the unanswered seqs with a 24-slot window. Xdrive (P9) is a byte-compatible port of the Xray-core cloud-storage transport, client and server. P10 adds the server-node pieces: per-user traffic counters with `/traffic/users`, a small idle relay buffer, a lazy BufferedConn reader, a server GC ballast and pre-auth XHTTP session limits. P13–P17 (open PRs, not merged) harden the server node: pre-auth deadlines and stream limits (P13), an optional decoy page and PROXY protocol v1/v2 on inbounds (P14), Xray Mux (mux.cool + XUDP) client and server (P15), `/metrics`, `/healthz`, `/readyz` and the `/events` stream (P16), and a hardened external controller (P17). Not affiliated with MetaCubeX; please do not report issues from this build upstream.*
 
 - Upstream: `MetaCubeX/mihomo`, тег **v1.19.32** (`88dcbf7f`). В нём новый TUN-стек `mips` (стек самого mihomo, теперь умолчание upstream) и `tun.congestion-controller` (cubic / reno / bbr / bbr3, только для `mips`).
 - Ветка: `bpn/v1.19.32` = `bpn/v1.19.31` (`9b11ffbd`, P1–P5), перенесённая `git rebase --onto v1.19.32 v1.19.31` 02.10.2026. Коммиты патчей: `v1.19.32..bpn/v1.19.32`. Хеши в таблице ниже — исходные, с `bpn/v1.19.31`.
@@ -27,6 +27,13 @@
 | **P10** | Серверная часть для слабой ноды и панели: (a) per-user счётчики трафика/соединений в TCP и UDP tracker, `GET /traffic/users?inbound=&user=&reset=true` (сброс периода, аналог Xray `QueryStats`); (b) relay читает в маленький буфер 2 КиБ, пока соединение простаивает, и в полные буферы при передаче; (c) `BufferedConn` создаёт `bufio.Reader` лениво (4 КиБ на соединение только при первом использовании); (d) GC ballast 8 МиБ в серверных сборках (не Android/iOS/CMFA, не при `GOGC`/`GOMEMLIMIT`); (e) XHTTP cap 4096 неавторизованных сессий (503) и 15 с на тело до download. Подробное сравнение с Prizrak-Core, Citrus и Xray — `docs/SERVER.md` | Нода 1–2 vCPU / 2 ГБ: меньше памяти на idle-соединение (по замерам Citrus — до −30 КБ heap и −26% RSS на REALITY), меньше циклов GC, защита от флуда XHTTP-сессий; панель наконец видит трафик по пользователям без пересборки конфига | `tunnel/statistic/users.go`, `tunnel/statistic/tracker.go`, `hub/route/users.go`, `hub/route/server.go`, `common/net/relay_copy.go`, `common/net/sing.go`, `common/net/bufconn.go`, `common/net/bufconn_unsafe.go`, `component/gcballast/`, `main.go`, `transport/xhttp/server.go`; тесты `tunnel/statistic/users_test.go`, `common/net/relay_copy_test.go`, `transport/xhttp/pending_bpn_test.go`, `common/net/*_test.go` | (b)(c)(d) — `getmikan/Citrus` (GPL-3.0): PR #52, #118, `common/net/{relay_copy,bufconn,gcballast}`; (a)(e) — свои, GPL-3.0 как mihomo | v1.19.32-bpn.3 | `go test ./common/net/ ./tunnel/... ./transport/xhttp/ ./hub/route/`; сквозной тест: VLESS+xdrive, `GET /traffic/users` отдаёт `upload/download`, `reset=true` обнуляет, `conns` возвращается в 0; `TestServerPendingSessionCap`; `TestUserManager`, `TestCopyConn`, `TestRelay` | Когда upstream mihomo даст per-user API и малые буферы relay, либо если нода не используется как сервер |
 | **P11** | Xray-совместимый gRPC API (`xray-api.listen`): `HandlerService` (`AlterInbound` = AddUser/RemoveUser, `GetInboundUsers`, `GetInboundUsersCount`, `ListInbounds`) и `StatsService` (`GetStats`, `QueryStats`, `GetUsersStats`, `GetStatsOnline`, `GetStatsOnlineIpList`, `GetAllOnlineUsers`, `GetSysStats`), плюс имена `v2ray.core.*`. Пользователи VLESS меняются в живом listener без рестарта (атомарная таблица), REST `GET/POST/PUT/PATCH/DELETE /inbounds/{name}/users`; per-user лимиты `user-limits` + `/limits/users` (соединения, скорость, квота upload+download, expiry). Снятие пользователя закрывает его живые сессии | Панель (Marzban/PasarGuard/Remnawave-совместимые клиенты) может добавлять/удалять пользователей и читать трафик через `xray api`, как у Xray-ноды, без SSH и рестарта. Лимиты закрывают дыру «безлимитный пароль» на слабой ноде | новый пакет `hub/xrayapi/`; `constant/inbound_users.go`, `listener/listener.go`, `listener/inbound/vless.go`, `listener/sing_vless/{service,server}.go`, `tunnel/statistic/{limits,users,manager,tracker}.go`, `tunnel/tunnel.go`, `hub/route/{inbounds,limits}.go`, `config/config.go`, `hub/executor/executor.go`; тесты `hub/xrayapi/*_test.go`, `tunnel/statistic/limits_test.go` | своё, GPL-3.0 как mihomo; формат — Xray-core `app/proxyman/command`, `app/stats/command` (GPL-3.0) | v1.19.32-bpn.4 | `go test ./hub/xrayapi ./tunnel/statistic ./common/net`; `xray api lsi/adu/inbounduser/stats/statsquery/statsonline/rmu` против mihomo (см. «P11: проверка»); REST + квота + удаление живой сессии проверены сквозным VLESS+xdrive | Пока панель не умеет говорить с mihomo напрямую или пока upstream не даст per-user API |
 | **P12** | Relay: порт `common/net/relay_batch.go` и `relay_yield.go` из Citrus. При передаче (адаптивный размер буфера уже вырос) отдельная горутина читает/расшифровывает источник, а запись отправляет всё накопленное одним `writev(2)`; пачка до 9 буферов плюс до 8 в очереди (около 0,5 МиБ на направление), при простое источник возвращается в основной цикл. Цикл уступает процессор (`runtime.Gosched`) после 256 КиБ и 1 мс, чтобы интерактивные соединения не ждали за bulk-передачей | Отправка через TLS/Shadowsocks источник отдаёт по записи/чанку; поштучные `write(2)` на нагруженной ноде тратят время на каждый сегмент. Citrus намерил +50% upload; download обычно и так идёт из сокета и батчинг не включает | `common/net/relay_batch.go`, `common/net/relay_yield.go`, `common/net/relay_copy.go`; тесты `common/net/` | `getmikan/Citrus` (GPL-3.0), порт с заменой `clear()` для Go 1.20 | v1.19.32-bpn.4 | `go test ./common/net/`; сквозной обмен VLESS+xdrive (1 МиБ, sha256) | Если upstream mihomo сделает свой батчинг |
+| **P13** | Защита серверной ноды до авторизации клиента, ключей конфига нет. Дедлайн 15 с: VLESS (вкл. VLESS Encryption и REALITY), Trojan, AnyTLS — от входа до заголовка протокола; HTTP, SOCKS4/5, mixed — на приветствие и запрос; Shadowsocks (обе реализации), Snell — до salt/адреса (Snell — до первого заголовка); после авторизации дедлайн снимается. VLESS/Trojan с grpc или xhttp — `ReadHeaderTimeout` 15 с и таймер до первого HTTP-запроса, после него таймер снят. Лимиты потоков: TUIC — 2048/2048 на соединение, до авторизации не больше 64 обработчиков потоков, 64 UDP-пакетов и 64 датаграмм; Hysteria2 — `MaxIncomingStreams` 1024 (было 2^60); AnyTLS, Trojan mux (smux), sing-mux — 1024 потока на сессию, адрес потока за 15 с. gun читает заголовки кадров циклом; кадр VLESS Encryption ≤ 16640, как у Xray. Подробнее и ограничения — «P13: pre-auth» | Неавторизованный клиент мог бесконечно держать соединения, горутины и память ноды; поток пустых gun-кадров до авторизации ронял процесс переполнением стека | новый пакет `listener/preauth/`; `listener/{anytls,auth,http,mixed,shadowsocks,sing,sing_hysteria2,sing_shadowsocks,sing_vless,snell,socks,trojan,tuic}/`, `transport/anytls/session/session.go`, `transport/gun/gun.go`, `transport/tuic/`, `transport/vless/addons.go`, `transport/vless/encryption/common.go` + тесты | `getmikan/Citrus` (GPL-3.0, sha — в сообщениях коммитов) и свои дополнения, GPL-3.0 | v1.19.32; **PR #11 открыт, не влит** | `go test ./listener/... ./transport/gun/...`; на каждый протокол «молчащий клиент» и «по байту» (без правки висит) и «после авторизации простой не режется»; grpc/xhttp — 8 вариантов и «свой клиент простаивает 3× дедлайна»; `TestServerPreAuthBudget` (без правки +3000 горутин), Hysteria2 4097 → 1024 потоков | Если upstream mihomo введёт такие же дедлайны и лимиты |
+| **P14** | Два ключа inbound, по умолчанию выключены. `fallback-page: <файл>` (vless/trojan через ws, grpc, xhttp): чужой запрос получает HTML-страницу вместо голого 404 / «101 Switching Protocols» / «400 invalid xpadding». `proxy-protocol: true` + `proxy-protocol-trusted` (TCP-inbound): адрес клиента берётся из заголовка PROXY v1/v2. Подробнее и ограничения — «P14: fallback-page и PROXY protocol» | Ответы ws/grpc/xhttp на чужой запрос выдают прокси; за балансировщиком / SNI-роутером в статистике, логах, правилах SRC-IP и фильтрах доступа был адрес балансировщика | новые `listener/fallback/`, `common/proxyproto/`, `listener/inbound/proxyprotocol.go`; `common/httputils/trusted_proxies.go`, `listener/config/{trojan,vless}.go`, `listener/inbound/{anytls,base,http,mixed,shadowsocks,snell,socks,sudoku,trojan,trusttunnel,tunnel,vless,vmess}.go`, `listener/sing_vless/server.go`, `listener/trojan/server.go`, `transport/xhttp/server.go` + тесты | `getmikan/Citrus` (GPL-3.0, sha — в сообщениях коммитов), GPL-3.0 | v1.19.32; **PR #10 открыт, не влит** | `go test ./common/proxyproto/ ./listener/... ./transport/xhttp/`; заглушка: vless+ws / ws `/` / grpc / xhttp / xhttp packet-up, trojan+ws, OPTIONS, GET = HEAD, без ключа — как раньше; PROXY: v1/v2, IPv4/IPv6, 9 протоколов, REALITY plain и vision, недоверенный / битый / молчащий пир; фаззинг парсера 60 с (~11 млн прогонов) | Если upstream mihomo добавит свои заглушку и PROXY protocol |
+| **P15** | Xray Mux (mux.cool + XUDP). Клиент: у `type: vless` блок `mux.cool` (`enabled`, `max-concurrency` 8, `max-connections` 128, `max-carriers` 0, `xudp-concurrency` 0, `xudp-proxy-udp443` reject/allow/skip) — до 8 TCP-соединений и UDP-потоков в одном соединении к ноде Xray, новые физические соединения открываются строго по одному, простаивающее закрывается через 16 с. Сервер: листенеры на общем sing-обработчике (vless, vmess, trojan, ss…) принимают mux.cool от Xray-клиентов нативно (раньше — через `vmess.HandleMuxConnection` из sing-vmess). Без ключа клиент не меняется. Подробнее — «P15: mux.cool» | Пачка TLS/REALITY-рукопожатий к ноде вызывает заморозку у мобильных операторов; Xray-клиенты с mux нужно обслуживать на mihomo-ноде | новый пакет `transport/muxcool/`; `adapter/outbound/{muxcool,vless}.go`, `adapter/parser.go`, `listener/sing/sing.go`, `listener/sing_vless/server.go`, `listener/sing_vmess/server.go`, `docs/config.yaml` + тесты | [legiz-ru/Prizrak-Core](https://github.com/legiz-ru/Prizrak-Core), автор jesus (`valmak29@gmail.com`), GPL-3.0, авторство сохранено (`cherry-pick -x`); исправления по ревью — свои, GPL-3.0 | v1.19.32; **PR #9 открыт, не влит** | `go test ./transport/muxcool/... ./adapter/... ./listener/...`; e2e против Xray 26.9.9 и 24.12.31 (tcp/udp/xudp в обе стороны, лимит носителей, простой 7 с): `XRAY_E2E_BINARY=<xray> go test -count=1 -tags integration -run 'TestMuxCoolProcess\|TestMuxCoolLongLived' -v ./transport/muxcool/` — отдельно от `listener/inbound` (на Windows мешает TIME_WAIT) | Если upstream mihomo добавит mux.cool или ноды и клиенты откажутся от Xray Mux |
+| **P16** | `/metrics` (формат Prometheus, свой писатель), `/healthz`, `/readyz` и поток событий `GET /events` (WebSocket / SSE / NDJSON) на контроллере. Ключи: `metrics.enable`, `metrics.per-user`, `health-without-auth`; всё выключено по умолчанию и закрыто `secret`. Подробнее и ограничения — «P16: метрики и события» | Prometheus снимает состояние ядра, панель получает события сессий, лимитов и перезагрузки сразу, без опроса | новые `component/eventbus/`, `hub/metrics/`, `hub/route/{events,metrics}.go`; `config/config.go`, `hub/executor/executor.go`, `hub/hub.go`, `hub/route/{configs,server}.go`, `listener/listener.go`, `tunnel/statistic/{inbounds,limits,tracker,users}.go` + тесты | `getmikan/Citrus` (GPL-3.0, sha — в сообщениях коммитов) с доработками, GPL-3.0 | v1.19.32 поверх P11 (база PR — `bpn/p11-xray-api`); **PR #13 открыт, не влит** | `go test ./hub/... ./component/eventbus/... ./tunnel/statistic/...`; тесты `/events` с `-count=5` — стабильно | Если upstream mihomo даст свои метрики и события |
+| **P17** | Защита контроллера (`external-controller`): без `secret` на сетевом адресе контроллер не поднимается (обход — `external-controller-allow-insecure`); без `secret` — чужой `Origin` и имя хоста в `Host` → 403; unix-сокет и named pipe требуют `secret`, если он задан; `/debug` только с `secret`; GET /configs маскирует ключи и пароли встроенных серверов; опасный `external-ui` отключается с предупреждением; PUT /configs применяет настройки контроллера; TLS ≥ 1.2 на контроллере и 9 TLS-inbound. Подробнее и ограничения — «P17: защита контроллера» | Контроллер нельзя случайно открыть наружу без пароля и через него нельзя достать ключи или файлы ядра. ПК-клиент, Android-клиент и веб-панели с `secret` работают как раньше (проверено по коду обоих клиентов) | новые `hub/route/{redact,security,unix_listen,unix_listen_unix,unix_listen_windows}.go`; `main.go`, `config/config.go`, `constant/path.go`, `hub/hub.go`, `hub/route/{common,configs,connections,server}.go`, `common/convert/converter.go`, `component/age/age.go`, `listener/{anytls,http,hysteria2_realm,mixed,sing_vless,sing_vmess,socks,trojan,trusttunnel}/…`, `transport/vless/encryption/factory.go` + тесты | `getmikan/Citrus` (GPL-3.0, sha — в сообщениях коммитов) с доработками, GPL-3.0. Не перенесены: одноразовые тикеты WebSocket (Citrus `21fa7eea`, ломают `?token=` у ПК-клиента и панелей), хунки updater | v1.19.32; **PR #12 открыт, не влит** | `go test ./hub/... ./config/...`, `GOOS=linux go vet`, `GOOS=android GOARCH=arm64 go build -tags with_gvisor,cmfa ./hub/... ./config/...`; совместимость: ПК-клиент на loopback с secret (REST, WS `?token=` для /traffic, /logs, /connections, /memory), панель с чужим Origin и secret, loopback без secret | Если upstream mihomo введёт такие же проверки |
+
+**Статус P13–P17:** код в открытых PR форка, ни один не влит в `bpn/v1.19.32` и не входит в тег: P13 — [#11](https://github.com/Rerowros/mihomo/pull/11), P14 — [#10](https://github.com/Rerowros/mihomo/pull/10), P15 — [#9](https://github.com/Rerowros/mihomo/pull/9), P16 — [#13](https://github.com/Rerowros/mihomo/pull/13) (стоит на P11, [#6](https://github.com/Rerowros/mihomo/pull/6); после слияния #6 база переключается на `bpn/v1.19.32`), P17 — [#12](https://github.com/Rerowros/mihomo/pull/12). Нигде не запускался `-race` (нет cgo на машине сборки). **P18** (IP пользователей и `max-ips`) — в работе.
 
 Только тесты, поведение не меняют: `ad4c3f42` — `listener/inbound/bpn_reality_xray_matrix_test.go`; `672fea5d` (ветка `bpn/v1.19.31-xhttp-par`) — `listener/inbound/bpn_xhttp_xray_interop_test.go`.
 
@@ -237,6 +244,11 @@ DELETE /limits/users?inbound=vless-in&user=alice
 - `GetStatsOnlineIpList` отдаёт пустой список IP: mihomo не хранит IP пользователя, только число соединений.
 - Runtime-пользователи живут в памяти: reload с изменённым `users:` пересоздаёт listener; добавленные через API пользователи при этом теряются, как и у Xray.
 - Скорость ограничивается после чтения/записи (token bucket, всплеск 100 мс); квота проверяется на новом соединении и после каждого блока, при исчерпании сессия закрывается. Снятие пользователя закрывает его живые сессии (`DELETE` и `rmu`).
+- Отзыв пользователя рвёт **все** его открытые соединения: TCP, UDP (`NewPacketConnection`), mux.cool/XUDP, sing-mux, xhttp, gRPC; рукопожатие, попавшее в момент удаления, тоже отклоняется. Все пути (Xray `RemoveUser`, REST PUT/PATCH/DELETE) сходятся в `Service.UpdateUsers`. Смена UUID или `flow` у того же имени считается удалением; PUT/PATCH без изменений сессии не трогает. Это строже Xray.
+- `max-conns` для UDP считает ассоциации, а не пакеты: слот берётся в начале новой ассоциации и освобождается на всех путях ошибки. Отказ пишется в Warn не чаще раза в минуту на пользователя. `Admit` атомарно резервирует слот при любой политике (квота, скорость, срок).
+- Дубли пользователей в конфиге: остаётся первый, дубль отбрасывается с предупреждением в лог (раньше один молча затирал другого). Через API дубль — ошибка; один UUID у двух email — ошибка. Имена сравниваются без регистра на всех путях.
+- `QueryStats` не отдаёт `>>>online`, как Xray.
+- Перезагрузка конфига, убирающая пользователя, его сессии не рвёт.
 
 Проверка (Windows, Xray 26.10.21):
 
@@ -249,6 +261,112 @@ go test ./hub/xrayapi ./tunnel/statistic ./common/net
 ### P12: relay batching
 
 Порт Citrus: при передаче источник читается отдельной горутиной, а запись идёт одним `writev(2)` на все уже прочитанные буферы (пачка до 9 буферов плюс до 8 в очереди, около 0,5 МиБ на направление). Это ускоряет upload через TLS/Shadowsocks, где каждый `Read` — одна запись; download из сокета идёт прежним путём. Проверка: `go test ./common/net/`; поведение relay не меняется, добавочные буферы выделяются только во время передачи.
+
+### P13: pre-auth
+
+Статус: PR [#11](https://github.com/Rerowros/mihomo/pull/11) открыт, не влит. Ключей конфига нет, включено всегда. Клиентский код (`adapter/outbound`) и `transport/xhttp` не меняются.
+
+Ограничения:
+
+- **VMess-вход не защищён** — ни дедлайном рукопожатия, ни через grpc/ws (его нет в списке Citrus, наши ноды его не используют). Отдельная задача.
+- Hysteria2 ограничен **1024 потоками на соединение**: клиент mihomo на 1025-м одновременном потоке в одном QUIC-соединении получит ошибку, а не будет ждать (как у официального сервера).
+- Локальные mixed/http/socks в клиентских приложениях тоже получают 15 с на приветствие. Простаивающее keep-alive соединение с запросом с телом закрывается через 15 с; браузеры и WinHTTP переоткрывают такие соединения сами.
+- REALITY/ShadowTLS-рукопожатия до слоя VLESS не ограничены: молчащий клиент REALITY проксируется на dest, как раньше.
+- TrustTunnel и ShadowQUIC не трогались.
+- Не проверено: `-race` (нет cgo), Linux.
+
+### P14: fallback-page и PROXY protocol
+
+Статус: PR [#10](https://github.com/Rerowros/mihomo/pull/10) открыт, не влит. Оба ключа по умолчанию выключены, без них поведение прежнее.
+
+```yaml
+listeners:
+  - name: vless-in
+    type: vless
+    port: 443
+    ws-path: /ws
+    fallback-page: site/index.html   # в домашней папке mihomo или SAFE_PATHS, до 1 МБ
+    proxy-protocol: true
+    proxy-protocol-trusted: [10.0.0.5/32, private]   # CIDR, IP, loopback, private; пусто = только loopback
+```
+
+- `fallback-page`: `/` и `/index.html` (GET/HEAD) → страница, остальное → 404; GET и HEAD отдают одинаковый `Content-Length`. ws: чужой путь или свой без `Upgrade` → страница (и при `ws-path: /`). grpc: всё, что не вызов gun. xhttp: чужой Host/путь или запрос без правильного паддинга, включая OPTIONS; заголовки XHTTP снимаются. Без HTTP-транспорта ключ игнорируется с предупреждением в лог; файл вне безопасных путей или больше 1 МБ — inbound не стартует.
+- `proxy-protocol`: соединение от недоверенного адреса закрывается без чтения; доверенный обязан прислать заголовок за 5 с; битый заголовок — закрытие. v2 LOCAL / v1 UNKNOWN — адрес соединения. Работает на TCP-inbound: http, socks, mixed, shadowsocks, snell, vless (вкл. REALITY, vision, ws), vmess, trojan, anytls, sudoku, trusttunnel, tunnel. На UDP/QUIC-типах ключ — ошибка конфига. Парсер свой, без зависимостей.
+
+Ограничения:
+
+- **С `fallback-page` XHTTP-клиент через browser dialer не работает:** его CORS preflight (OPTIONS) без паддинга получает заглушку. Клиенты mihomo и Xray OPTIONS не шлют.
+- **С `proxy-protocol` `lan-allowed-ips` и `skip-auth-prefixes` применяются к адресу клиента из заголовка**, а не к адресу балансировщика. Это строже: за локальным балансировщиком со `skip-auth-prefixes: 127.0.0.0/8` пароль начнут спрашивать у внешних клиентов.
+- Не проверено: живые HAProxy/nginx, Linux, `-race`.
+
+### P15: mux.cool
+
+Статус: PR [#9](https://github.com/Rerowros/mihomo/pull/9) открыт, не влит. Затрагивает и клиент: если ядро с P15 попадёт в приложение, поведение меняется только у прокси с `mux.cool.enabled: true`.
+
+```yaml
+proxies:
+  - name: node
+    type: vless
+    # ...
+    mux.cool:
+      enabled: true
+      max-concurrency: 8        # потоков на соединение, 0 = 8
+      max-connections: 128      # сессий за жизнь соединения, потом ротация, 0 = 128
+      max-carriers: 0           # лимит физических соединений, 0 = без лимита
+      xudp-concurrency: 0       # отдельные XUDP-сессии на соединение, 0 = общий пул
+      xudp-proxy-udp443: reject # reject | allow | skip
+```
+
+- Только `type: vless`; вместе с `flow: xtls-rprx-vision` или `smux` — ошибка конфига. UDP идёт через mux, только если у прокси `udp: true`.
+- Исправления поверх Prizrak (найдены ревью): ctx из `DialContext` действует только до открытия сессии (раньше любое TCP через mux.cool рвалось через 5 с); сервер при полной очереди потока ждёт для TCP, как Xray, и выбрасывает пакет для UDP (раньше закрывал сессию у всех клиентов); End от клиента дописывает очередь в цель; кадр New+UDP без GlobalID → GlobalID = 0, как у Xray; ответный UDP без адреса берёт адрес сессии; `SupportUDP` — у базового прокси; `ServerRuntime.Close` ограничен 5 с.
+
+Ограничения (как у Xray):
+
+- Half-close приложения (`shutdown(SHUT_WR)`) внутри mux не поддерживается: клиент шлёт End, и ответ после него не читается.
+- Цель, которая не читает и не закрывается, держит очередь носителя (head-of-line); потеря пакетов на носителе задерживает все логические сессии на нём.
+- Не проверено: `-race` (нет cgo).
+
+### P16: метрики и события
+
+Статус: PR [#13](https://github.com/Rerowros/mihomo/pull/13) открыт, не влит; ветка стоит на P11 ([#6](https://github.com/Rerowros/mihomo/pull/6)). Всё выключено по умолчанию и закрыто `secret` контроллера. Новых зависимостей нет.
+
+```yaml
+metrics:
+  enable: true
+  per-user: false        # трафик и соединения по каждому пользователю
+health-without-auth: false
+```
+
+- `/metrics` — процесс и Go runtime, общий трафик, соединения, трафик и соединения по inbound, онлайн по inbound, отказы по лимитам пользователей; с `per-user` — по пользователям. gzip по запросу, `gzip;q=0` — отказ. Счётчики накопительные: сброс из панели (REST `?reset`, Xray `QueryStats reset`) то, что видит Prometheus, не уменьшает. Имена пользователей с битым UTF-8 не ломают сбор (байты → U+FFFD).
+- `/healthz` — всегда 200, пока процесс отвечает (перезагрузка конфига не перезапускает контейнер). `/readyz` — 200, когда конфиг применён и все слушатели подняты, иначе 503.
+- `GET /events` — WebSocket (если запрос просит upgrade), SSE (`Accept: text/event-stream`) или NDJSON; фильтр `?types=`. События: `user.session` (первое соединение пользователя открыто / последнее закрыто), `user.limit` (отказ по сроку, квоте или max-conns — не чаще раза в секунду на пользователя, с числом пропущенных), `user.revoked`, `config.reload`, `dropped` (медленный читатель потерял N событий). Публикация никогда не блокирует соединения; без подписчиков — одна атомарная загрузка.
+
+Ограничения:
+
+- Keep-alive раз в 25 с: пустая строка в NDJSON, комментарий `:` в SSE, ping в WS. **Потребитель NDJSON должен пропускать пустые строки.**
+- **Не больше 32 потоков `/events`, дальше 429** (до upgrade). Клиент, который перестал читать, отключается по дедлайну записи 10 с и освобождает место.
+- Перезапуск контроллера (новый secret, смена адреса) закрывает все потоки, открытые со старым secret.
+- Не проверено: `-race` (нет cgo), Linux, живой Prometheus/nginx.
+
+### P17: защита контроллера
+
+Статус: PR [#12](https://github.com/Rerowros/mihomo/pull/12) открыт, не влит.
+
+- Сетевой адрес без `secret` → контроллер не поднимается, ядро работает; в лог `External controller refused: …`, PUT /configs с таким конфигом → 400. Обход явно: `external-controller-allow-insecure: true` / `-ext-ctl-allow-insecure` / `CLASH_OVERRIDE_EXTERNAL_CONTROLLER_ALLOW_INSECURE`. На 127.0.0.1 без secret — как раньше.
+- Без `secret`: чужой `Origin` → 403, имя хоста в `Host` → 403 (DNS rebinding). С secret ничего не меняется; панели с `?token=` работают.
+- unix-сокет и named pipe требуют secret, если он задан. **unix-сокет создаётся с правами 0600; переопределить — переменной окружения `CLASH_UNIX_SOCKET_MODE`** (восьмеричное, например `0660`).
+- `/debug` — только с secret. GET /configs маскирует ключи и пароли встроенных серверов (TUIC token/users/private-key/ech-key, ss-config, vmess-config, ResTLS, JLS, KcpTun); PATCH /configs с маской оставляет текущие значения.
+- **`external-ui`, совпадающий с домашней папкой ядра, папкой конфига, SAFE_PATHS или их родителем, отключается с предупреждением** (UI не раздаётся); конфиг не отклоняется — подписка с `external-ui: ./` не сломает ПК-клиент.
+- PUT /configs применяет настройки контроллера (порт, secret, адреса); ПК-клиент шлёт те же порт и secret, контроллер у него не перезапускается. Упавший слушатель контроллера (занят порт) пробуется снова при следующей перезагрузке; рабочие слушатели и их WebSocket-потоки не трогаются.
+- TLS ≥ 1.2 на контроллере и 9 TLS-inbound. Ключи и пароли не попадают в логи и в файлы, доступные всем на чтение. Сервер контроллера: `ReadHeaderTimeout` 10 с, `IdleTimeout` 2 мин; `/connections?interval=` вне 1..3600000 → 400 (раньше `0` ронял обработчик).
+
+Ограничения:
+
+- `-ext-ui` / `CLASH_OVERRIDE_EXTERNAL_UI_DIR` с опасным путём по-прежнему останавливает ядро — это явная настройка запуска, ПК-клиент её не использует.
+- DoH на пути `/` работает только для POST: GET `/` отдаёт hello (так было и раньше).
+- Named pipe на Windows без secret доступен всем локальным пользователям (SDDL upstream).
+- Ошибка upstream вне этой ветки: PATCH /configs закрывает работающий ss/vmess-слушатель.
+- Не проверено: Linux-тесты unix-сокета (только vet), `-race`.
 
 ### P5: XHTTP packet-up, параллельная отправка
 
@@ -308,5 +426,7 @@ Submodule `core/src/foss/golang/clash` в [Rerowros/bpnclash](https://github.com
 - mihomo — GPL-3.0 (`LICENSE` в корне; код и теги — ветки Alpha/Meta upstream). Форк публичный, исходники всех патчей открыты, что покрывает требование GPL для распространяемой `libclash.so`.
 - P1 взят из [legiz-ru/Prizrak-Core](https://github.com/legiz-ru/Prizrak-Core) (GPL-3.0, форк mihomo). Автор — Jolymmiles (`jesus <valmak29@gmail.com>`), сохранён как author коммита, в сообщении есть `(cherry picked from commit 2197a3c…)`.
 - P6 написан по мотивам патча ClashFest 0002 ([Nemu-x/ClashFest](https://github.com/Nemu-x/ClashFest), GPL-3.0, автор Nemu-x); ссылка — в коде и в сообщении коммита.
+- P13, P14, P16, P17 перенесены из [getmikan/Citrus](https://github.com/getmikan/Citrus) (GPL-3.0); sha исходных коммитов — в сообщениях коммитов (`Ported from getmikan/Citrus <sha>`).
+- P15 взят из [legiz-ru/Prizrak-Core](https://github.com/legiz-ru/Prizrak-Core) (GPL-3.0). Автор — `jesus <valmak29@gmail.com>`, сохранён как author коммитов, в сообщениях есть `(cherry picked from commit …)`; исправления поверх — свои.
 - utls — BSD-3-Clause (The Go Authors, refraction-networking, metacubex). Лицензия идёт с модулем.
 - Этот форк не связан с MetaCubeX и XTLS. Проблемы этой сборки в upstream не сообщаем.
