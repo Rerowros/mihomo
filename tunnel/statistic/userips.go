@@ -25,11 +25,20 @@ import (
 // takes a place in max-ips: a client that reconnects keeps its place, and a
 // second client cannot take it in between. The online list does not use it:
 // like Xray it shows only the addresses with open connections.
-var userIPRelease = 60 * time.Second
+const userIPRelease = 60 * time.Second
 
 // userIPSweepInterval is how often the expired addresses are dropped from the
 // users nobody asks about; Admit and the readers drop them on the way.
-var userIPSweepInterval = time.Minute
+const userIPSweepInterval = time.Minute
+
+// ipReleaseWindow is the release window of the manager: userIPRelease unless
+// a test set its own.
+func (m *UserManager) ipReleaseWindow() time.Duration {
+	if m.ipRelease > 0 {
+		return m.ipRelease
+	}
+	return userIPRelease
+}
 
 // ipSlot is one address of a user on one inbound. The user name is global
 // (like Xray's email), the inbound is kept so that revoking the user on one
@@ -52,6 +61,7 @@ type ipEntry struct {
 type userIPs struct {
 	mu      sync.Mutex
 	entries map[ipSlot]*ipEntry
+	window  time.Duration // the release window of the manager
 }
 
 // trackedIP returns the address recorded for a connection from src.
@@ -74,7 +84,7 @@ func FormatUserIP(ip netip.Addr) string {
 // prune drops the addresses whose release window ended; the caller holds mu.
 func (s *userIPs) prune(now time.Time) {
 	for slot, entry := range s.entries {
-		if entry.conns <= 0 && now.Sub(entry.left) >= userIPRelease {
+		if entry.conns <= 0 && now.Sub(entry.left) >= s.window {
 			delete(s.entries, slot)
 		}
 	}
@@ -185,25 +195,40 @@ func (m *UserManager) ipSet(user string, create bool) *userIPs {
 		m.ipSets = make(map[string]*userIPs)
 	}
 	if set = m.ipSets[user]; set == nil {
-		set = &userIPs{entries: make(map[ipSlot]*ipEntry)}
+		set = &userIPs{entries: make(map[ipSlot]*ipEntry), window: m.ipReleaseWindow()}
 		m.ipSets[user] = set
 	}
 	m.mu.Unlock()
 	m.ipSweeper.Do(func() {
 		m.ipSweeperStarted.Store(true)
-		go m.sweepIPs()
+		interval := m.ipSweepInterval
+		if interval <= 0 {
+			interval = userIPSweepInterval
+		}
+		stop := make(chan struct{})
+		m.mu.Lock()
+		m.ipSweeperStop = stop
+		m.mu.Unlock()
+		go m.sweepIPs(interval, stop)
 	})
 	return set
 }
 
-func (m *UserManager) sweepIPs() {
-	ticker := time.NewTicker(userIPSweepInterval)
+// sweepIPs prunes all address sets every interval until stop is closed (only
+// tests stop it; the managers of a running core live as long as it).
+func (m *UserManager) sweepIPs(interval time.Duration, stop <-chan struct{}) {
+	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
-	for now := range ticker.C {
-		for _, set := range m.allIPSets() {
-			set.mu.Lock()
-			set.prune(now)
-			set.mu.Unlock()
+	for {
+		select {
+		case <-stop:
+			return
+		case now := <-ticker.C:
+			for _, set := range m.allIPSets() {
+				set.mu.Lock()
+				set.prune(now)
+				set.mu.Unlock()
+			}
 		}
 	}
 }

@@ -14,10 +14,26 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// newIPLimitManager returns a limit manager with its own address table.
-func newIPLimitManager() *LimitManager {
+// newIPLimitManager returns a limit manager with its own address table, whose
+// sweeper stops at the end of the test.
+func newIPLimitManager(t *testing.T) *LimitManager {
+	return newIPLimitManagerTimed(t, 0, 0)
+}
+
+// newIPLimitManagerTimed is newIPLimitManager with its own release window and
+// sweep period (zero keeps the default).
+func newIPLimitManagerTimed(t *testing.T, release, sweep time.Duration) *LimitManager {
 	m := newLimitManager()
-	m.users = &UserManager{users: make(map[UserKey]*userCounters)}
+	users := &UserManager{users: make(map[UserKey]*userCounters), ipRelease: release, ipSweepInterval: sweep}
+	m.users = users
+	t.Cleanup(func() {
+		users.mu.Lock()
+		defer users.mu.Unlock()
+		if users.ipSweeperStop != nil {
+			close(users.ipSweeperStop)
+			users.ipSweeperStop = nil
+		}
+	})
 	return m
 }
 
@@ -31,18 +47,11 @@ func onlineIPStrings(m *LimitManager, inbound, user string) []string {
 	return ips
 }
 
-func shortIPRelease(t *testing.T, d time.Duration) {
-	old := userIPRelease
-	userIPRelease = d
-	t.Cleanup(func() { userIPRelease = old })
-}
-
 // max-ips=1: a second address is refused, the same address passes; after its
 // last connection the address keeps the place for the release window, then
 // another address passes.
 func TestMaxIPsWindow(t *testing.T) {
-	shortIPRelease(t, 200*time.Millisecond)
-	m := newIPLimitManager()
+	m := newIPLimitManagerTimed(t, 200*time.Millisecond, 0)
 	key := UserKey{Inbound: "in", User: "u"}
 	m.Set(UserLimit{Inbound: "in", User: "u", MaxIPs: 1})
 
@@ -68,7 +77,7 @@ func TestMaxIPsWindow(t *testing.T) {
 
 // The limit is per user name on all inbounds.
 func TestMaxIPsAcrossInbounds(t *testing.T) {
-	m := newIPLimitManager()
+	m := newIPLimitManager(t)
 	m.Set(UserLimit{Inbound: "in1", User: "u", MaxIPs: 1})
 	m.Set(UserLimit{Inbound: "in2", User: "u", MaxIPs: 1})
 
@@ -84,7 +93,7 @@ func TestMaxIPsAcrossInbounds(t *testing.T) {
 
 // Parallel connections from different new addresses cannot all pass.
 func TestMaxIPsParallel(t *testing.T) {
-	m := newIPLimitManager()
+	m := newIPLimitManager(t)
 	m.Set(UserLimit{Inbound: "in1", User: "u", MaxIPs: 1})
 	m.Set(UserLimit{Inbound: "in2", User: "u", MaxIPs: 1})
 	var passed atomic.Int32
@@ -111,7 +120,7 @@ func TestMaxIPsParallel(t *testing.T) {
 // connections, then a new connection from the same address, then the release
 // of the old one must not remove the new entry.
 func TestForgetIPsReissueRace(t *testing.T) {
-	m := newIPLimitManager()
+	m := newIPLimitManager(t)
 	key := UserKey{Inbound: "in", User: "u"}
 	m.Set(UserLimit{Inbound: "in", User: "u", MaxIPs: 1})
 
@@ -139,7 +148,7 @@ func TestForgetIPsReissueRace(t *testing.T) {
 // A forgotten entry with open connections leaves with its last one and does
 // not hold a max-ips place meanwhile; other inbounds keep their addresses.
 func TestForgetIPsOpenConnections(t *testing.T) {
-	m := newIPLimitManager()
+	m := newIPLimitManager(t)
 	key := UserKey{Inbound: "in", User: "u"}
 	m.Set(UserLimit{Inbound: "in", User: "u", MaxIPs: 2})
 	old, err := m.AdmitFrom(key, addr("198.51.100.1"))
@@ -162,7 +171,7 @@ func TestForgetIPsOpenConnections(t *testing.T) {
 }
 
 func TestUserIPMappedAndIPv6(t *testing.T) {
-	m := newIPLimitManager()
+	m := newIPLimitManager(t)
 	key := UserKey{Inbound: "in", User: "u"}
 	m.Set(UserLimit{Inbound: "in", User: "u", MaxIPs: 2})
 
@@ -186,7 +195,7 @@ func TestUserIPMappedAndIPv6(t *testing.T) {
 
 // Loopback and missing addresses are not recorded and not limited.
 func TestUserIPLoopbackNotOnline(t *testing.T) {
-	m := newIPLimitManager()
+	m := newIPLimitManager(t)
 	key := UserKey{Inbound: "in", User: "u"}
 	m.Set(UserLimit{Inbound: "in", User: "u", MaxIPs: 1})
 	for _, ip := range []netip.Addr{addr("127.0.0.1"), addr("127.0.0.2"), addr("::1"), {}} {
@@ -200,7 +209,7 @@ func TestUserIPLoopbackNotOnline(t *testing.T) {
 
 // A connection refused by max-conns records no address.
 func TestMaxConnsRejectRecordsNoIP(t *testing.T) {
-	m := newIPLimitManager()
+	m := newIPLimitManager(t)
 	key := UserKey{Inbound: "in", User: "u"}
 	m.Set(UserLimit{Inbound: "in", User: "u", MaxConns: 1})
 	a, err := m.AdmitFrom(key, addr("198.51.100.1"))
@@ -214,7 +223,7 @@ func TestMaxConnsRejectRecordsNoIP(t *testing.T) {
 
 // A connection refused by max-ips takes no max-conns slot.
 func TestMaxIPsRejectTakesNoSlot(t *testing.T) {
-	m := newIPLimitManager()
+	m := newIPLimitManager(t)
 	key := UserKey{Inbound: "in", User: "u"}
 	m.Set(UserLimit{Inbound: "in", User: "u", MaxConns: 2, MaxIPs: 1})
 	a, err := m.AdmitFrom(key, addr("198.51.100.1"))
@@ -235,7 +244,7 @@ func TestMaxIPsRejectTakesNoSlot(t *testing.T) {
 // Lowering max-ips keeps the open connections and their addresses; only new
 // addresses are refused.
 func TestMaxIPsLowered(t *testing.T) {
-	m := newIPLimitManager()
+	m := newIPLimitManager(t)
 	key := UserKey{Inbound: "in", User: "u"}
 	m.Set(UserLimit{Inbound: "in", User: "u", MaxIPs: 3})
 	for _, ip := range []string{"198.51.100.1", "198.51.100.2", "198.51.100.3"} {
@@ -255,7 +264,7 @@ func TestMaxIPsLowered(t *testing.T) {
 
 // A user without a policy still has its addresses recorded for the API.
 func TestUserIPsWithoutPolicy(t *testing.T) {
-	m := newIPLimitManager()
+	m := newIPLimitManager(t)
 	key := UserKey{Inbound: "in", User: "free"}
 	a, err := m.AdmitFrom(key, addr("198.51.100.1"))
 	require.NoError(t, err)
@@ -270,7 +279,7 @@ func TestUserIPsWithoutPolicy(t *testing.T) {
 // client build (no inbound users) or users without a real address never get
 // the goroutine.
 func TestIPSweeperStartsOnFirstAddress(t *testing.T) {
-	m := newIPLimitManager()
+	m := newIPLimitManager(t)
 	key := UserKey{Inbound: "in", User: "u"}
 	for _, ip := range []netip.Addr{{}, addr("127.0.0.1"), addr("::1")} {
 		a, err := m.AdmitFrom(key, ip)
@@ -292,11 +301,7 @@ func TestIPSweeperStartsOnFirstAddress(t *testing.T) {
 }
 
 func TestIPSweeperPrunes(t *testing.T) {
-	shortIPRelease(t, 10*time.Millisecond)
-	oldInterval := userIPSweepInterval
-	userIPSweepInterval = 20 * time.Millisecond
-	t.Cleanup(func() { userIPSweepInterval = oldInterval })
-	m := newIPLimitManager()
+	m := newIPLimitManagerTimed(t, 10*time.Millisecond, 20*time.Millisecond)
 	a, err := m.AdmitFrom(UserKey{Inbound: "in", User: "u"}, addr("198.51.100.1"))
 	require.NoError(t, err)
 	a.Release()
@@ -310,7 +315,7 @@ func TestIPSweeperPrunes(t *testing.T) {
 
 func TestMaxIPsRejectedEvent(t *testing.T) {
 	const inbound = "events-maxips-in"
-	m := newIPLimitManager()
+	m := newIPLimitManager(t)
 	key := UserKey{Inbound: inbound, User: "eve"}
 	m.Set(UserLimit{Inbound: inbound, User: "eve", MaxIPs: 1})
 	s := subscribe(t, eventbus.TypeUserLimit, 16)
@@ -331,7 +336,7 @@ func TestMaxIPsRejectedEvent(t *testing.T) {
 // leaves no release window: the user given the name again with max-ips=1
 // connects at once from another address.
 func TestRevokedTrackerLeavesNoIPWindow(t *testing.T) {
-	m := newIPLimitManager()
+	m := newIPLimitManager(t)
 	key := UserKey{Inbound: "in", User: "u"}
 	m.Set(UserLimit{Inbound: "in", User: "u", MaxIPs: 1})
 
@@ -349,7 +354,7 @@ func TestRevokedTrackerLeavesNoIPWindow(t *testing.T) {
 
 // A live session keeps the window: closing its tracker holds the place.
 func TestLiveTrackerKeepsIPWindow(t *testing.T) {
-	m := newIPLimitManager()
+	m := newIPLimitManager(t)
 	key := UserKey{Inbound: "in", User: "u"}
 	m.Set(UserLimit{Inbound: "in", User: "u", MaxIPs: 1})
 
@@ -368,7 +373,7 @@ func TestLiveTrackerKeepsIPWindow(t *testing.T) {
 // connections still use, and does not restart the window of one that was in
 // it already.
 func TestRevokedReleaseKeepsSharedEntry(t *testing.T) {
-	m := newIPLimitManager()
+	m := newIPLimitManager(t)
 	key := UserKey{Inbound: "in", User: "u"}
 	m.Set(UserLimit{Inbound: "in", User: "u", MaxIPs: 1})
 	revoked := &testSession{revoked: true}
@@ -392,7 +397,7 @@ func TestRevokedReleaseKeepsSharedEntry(t *testing.T) {
 // address sets: it completes while the set of the user is locked. Only
 // SnapshotWithIPs (GET /traffic/users) reads them.
 func TestSnapshotSkipsIPs(t *testing.T) {
-	m := newIPLimitManager()
+	m := newIPLimitManager(t)
 	users := m.userManager()
 	key := UserKey{Inbound: "in", User: "u"}
 	users.Open(key)
@@ -419,4 +424,27 @@ func TestSnapshotSkipsIPs(t *testing.T) {
 	require.Len(t, stats, 1)
 	require.Len(t, stats[0].IPs, 1)
 	assert.Equal(t, "198.51.100.1", stats[0].IPs[0].IP)
+}
+
+// The release window and the sweep period belong to the manager, so a test
+// does not change them under the sweepers of other managers, and the sweeper
+// of a test manager ends with the test.
+func TestIPSweeperOwnTimingAndStop(t *testing.T) {
+	m := newIPLimitManagerTimed(t, time.Millisecond, 10*time.Millisecond)
+	users := m.userManager()
+	assert.Equal(t, userIPRelease, DefaultUserManager.ipReleaseWindow(), "the default manager lost the 60 s window")
+
+	a, err := m.AdmitFrom(UserKey{Inbound: "in", User: "u"}, addr("198.51.100.1"))
+	require.NoError(t, err)
+	users.mu.Lock()
+	close(users.ipSweeperStop)
+	users.ipSweeperStop = nil
+	users.mu.Unlock()
+	a.Release()
+
+	time.Sleep(60 * time.Millisecond)
+	set := users.ipSet("u", false)
+	set.mu.Lock()
+	defer set.mu.Unlock()
+	assert.Len(t, set.entries, 1, "the stopped sweeper still pruned")
 }

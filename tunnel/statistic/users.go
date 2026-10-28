@@ -56,6 +56,12 @@ type UserManager struct {
 	ipSets           map[string]*userIPs
 	ipSweeper        sync.Once
 	ipSweeperStarted atomic.Bool
+	ipSweeperStop    chan struct{} // guarded by mu; closing it ends the sweeper
+	// ipRelease and ipSweepInterval are the release window and the sweep
+	// period; zero means userIPRelease and userIPSweepInterval. Tests set
+	// them before the manager is used.
+	ipRelease       time.Duration
+	ipSweepInterval time.Duration
 }
 
 // DefaultUserManager is filled by the inbound trackers.
