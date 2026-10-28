@@ -181,8 +181,11 @@ func (s *userIPs) discard(slot ipSlot, entry *ipEntry) {
 }
 
 // ipSet returns the addresses of a user name; with create it makes them and
-// starts the sweeper, which therefore runs only on a server whose users
-// connect from a real address.
+// starts the sweeper, which therefore runs only once an authenticated user
+// connects from a non-loopback address. On a server that is the first user
+// connection. A client build gets it only with allow-lan and authentication
+// on its http/socks/mixed inbound, when a LAN device logs in: then it is one
+// goroutine with a ticker once a minute. Other client builds never start it.
 func (m *UserManager) ipSet(user string, create bool) *userIPs {
 	m.mu.RLock()
 	set := m.ipSets[user]

@@ -27,6 +27,12 @@ type UserLimit struct {
 	// MaxIPs is the number of client addresses of the user name on all
 	// inbounds at once; see userips.go for what an address is and why it is
 	// not safe behind a CDN. Lowering it does not close open connections.
+	// It is checked by the policy of the inbound a connection comes in on: if
+	// the user has no policy on one inbound, new addresses through that
+	// inbound are not limited (they still count in the limit of the others).
+	// In Docker with userland-proxy the address of every client is the
+	// gateway of the bridge, so max-ips needs host networking or
+	// userland-proxy off there.
 	MaxIPs   int   `json:"maxIPs,omitempty" yaml:"max-ips,omitempty"`
 	UpBps    int64 `json:"upBps,omitempty" yaml:"up-bps,omitempty"`
 	DownBps  int64 `json:"downBps,omitempty" yaml:"down-bps,omitempty"`
