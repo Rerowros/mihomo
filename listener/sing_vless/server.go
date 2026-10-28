@@ -12,6 +12,7 @@ import (
 	"github.com/metacubex/mihomo/component/ech"
 	C "github.com/metacubex/mihomo/constant"
 	LC "github.com/metacubex/mihomo/listener/config"
+	"github.com/metacubex/mihomo/listener/fallback"
 	"github.com/metacubex/mihomo/listener/jls"
 	"github.com/metacubex/mihomo/listener/reality"
 	"github.com/metacubex/mihomo/listener/restls"
@@ -164,9 +165,17 @@ func New(config LC.VlessServer, lc C.InboundListenConfig, tunnel C.Tunnel, addit
 			return nil, err
 		}
 	}
+	xhttpOn := config.XHTTPConfig.Path != "" || config.XHTTPConfig.Host != "" || config.XHTTPConfig.Mode != ""
+	// fallback-page: what a request that is not the inbound's own gets on an HTTP transport.
+	// Only with one: a handler makes the listener serve HTTP, which plain VLESS does not.
+	var page http.Handler
+	if config.FallbackPage != "" && (config.WsPath != "" || config.GrpcServiceName != "" || xhttpOn) {
+		if page, err = fallback.Page(config.FallbackPage); err != nil {
+			return nil, err
+		}
+	}
 	if config.WsPath != "" {
-		httpMux := http.NewServeMux()
-		httpMux.HandleFunc(config.WsPath, func(w http.ResponseWriter, r *http.Request) {
+		httpServer.Handler = fallback.WebSocket(config.WsPath, page, func(w http.ResponseWriter, r *http.Request) {
 			conn, err := mihomoVMess.StreamUpgradedWebsocketConn(w, r)
 			if err != nil {
 				http.Error(w, err.Error(), 500)
@@ -174,17 +183,20 @@ func New(config LC.VlessServer, lc C.InboundListenConfig, tunnel C.Tunnel, addit
 			}
 			sl.HandleConn(conn, tunnel, additions...)
 		})
-		httpServer.Handler = httpMux
 		httpServer.Protocols.SetHTTP1(true)
 		tlsConfig.NextProtos = append(tlsConfig.NextProtos, "http/1.1")
 	}
 	if config.GrpcServiceName != "" {
+		other := httpServer.Handler
+		if other == nil {
+			other = page
+		}
 		httpServer.Handler = gun.NewServerHandler(gun.ServerOption{
 			ServiceName: config.GrpcServiceName,
 			ConnHandler: func(conn net.Conn) {
 				sl.HandleConn(conn, tunnel, additions...)
 			},
-			HttpHandler: httpServer.Handler,
+			HttpHandler: other,
 		})
 		httpServer.Protocols.SetHTTP2(true)
 		// SetUnencryptedHTTP2 to ensure we can work in plain http2 and some tls conn is not *tls.Conn (like *reality.Conn)
@@ -204,7 +216,7 @@ func New(config LC.VlessServer, lc C.InboundListenConfig, tunnel C.Tunnel, addit
 			return nil, errors.New("unsupported xhttp mode")
 		}
 	}
-	if config.XHTTPConfig.Path != "" || config.XHTTPConfig.Host != "" || config.XHTTPConfig.Mode != "" {
+	if xhttpOn {
 		httpServer.Handler, err = xhttp.NewServerHandler(xhttp.ServerOption{
 			Config: xhttp.Config{
 				Host:                 config.XHTTPConfig.Host,
@@ -233,6 +245,7 @@ func New(config LC.VlessServer, lc C.InboundListenConfig, tunnel C.Tunnel, addit
 				sl.HandleConn(conn, tunnel, additions...)
 			},
 			HttpHandler: httpServer.Handler,
+			Fallback:    page,
 		})
 		if err != nil {
 			return nil, err

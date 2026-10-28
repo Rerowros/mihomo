@@ -21,6 +21,10 @@ type ServerOption struct {
 	Config
 	ConnHandler func(net.Conn)
 	HttpHandler http.Handler
+	// Fallback answers a request that is not the inbound's own in place of a 404: another
+	// host, a path outside the inbound's with no HttpHandler, or no XHTTP request at all
+	// (the listener's fallback-page). nil: the 404 as before.
+	Fallback http.Handler
 }
 
 type httpServerConn struct {
@@ -99,6 +103,7 @@ type requestHandler struct {
 	config      Config
 	connHandler func(net.Conn)
 	httpHandler http.Handler
+	fallback    http.Handler // ServerOption.Fallback
 
 	xPaddingBytes        Range
 	scMaxEachPostBytes   Range
@@ -130,6 +135,7 @@ func NewServerHandler(opt ServerOption) (http.Handler, error) {
 		config:               opt.Config,
 		connHandler:          opt.ConnHandler,
 		httpHandler:          opt.HttpHandler,
+		fallback:             opt.Fallback,
 		xPaddingBytes:        xPaddingBytes,
 		scMaxEachPostBytes:   scMaxEachPostBytes,
 		scStreamUpServerSecs: scStreamUpServerSecs,
@@ -232,12 +238,12 @@ func (h *requestHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if h.config.Host != "" && !equalHost(r.Host, h.config.Host) {
-		http.NotFound(w, r)
+		h.notFound(w, r)
 		return
 	}
 
 	if !strings.HasPrefix(r.URL.Path, path) {
-		http.NotFound(w, r)
+		h.notFound(w, r)
 		return
 	}
 
@@ -268,6 +274,11 @@ func (h *requestHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	paddingValue, _ := h.config.ExtractXPaddingFromRequest(r, h.config.XPaddingObfsMode)
 	if !h.config.IsPaddingValid(paddingValue, h.xPaddingBytes.Min, h.xPaddingBytes.Max, PaddingMethod(h.config.XPaddingMethod)) {
+		// No XHTTP client sends a request without its padding: a stranger gets the fallback.
+		if h.fallback != nil {
+			h.notFound(w, r)
+			return
+		}
 		http.Error(w, "invalid xpadding", http.StatusBadRequest)
 		return
 	}
@@ -495,7 +506,20 @@ func (h *requestHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	http.NotFound(w, r)
+	h.notFound(w, r)
+}
+
+// notFound answers a request that is not this inbound's: the fallback, without the headers
+// set so far for an XHTTP response, when there is one; a 404 as before otherwise.
+func (h *requestHandler) notFound(w http.ResponseWriter, r *http.Request) {
+	if h.fallback == nil {
+		http.NotFound(w, r)
+		return
+	}
+	for k := range w.Header() {
+		delete(w.Header(), k)
+	}
+	h.fallback.ServeHTTP(w, r)
 }
 
 func splitNonEmpty(s string) []string {
