@@ -105,20 +105,20 @@ func SetUIPath(path string) {
 func router(isDebug bool, secret string, dohServer string, cors Cors) *chi.Mux {
 	r := chi.NewRouter()
 	cors.Apply(r)
-	if isDebug {
-		r.Mount("/debug", func() http.Handler {
-			r := chi.NewRouter()
-			r.Put("/gc", func(w http.ResponseWriter, r *http.Request) {
-				debug.FreeOSMemory()
-			})
-			handler := middleware.Profiler
-			r.Mount("/", handler())
-			return r
-		}())
-	}
 	r.Group(func(r chi.Router) {
 		if secret != "" {
 			r.Use(authentication(secret))
+		}
+		if isDebug {
+			r.Mount("/debug", func() http.Handler {
+				r := chi.NewRouter()
+				r.Put("/gc", func(w http.ResponseWriter, r *http.Request) {
+					debug.FreeOSMemory()
+				})
+				handler := middleware.Profiler
+				r.Mount("/", handler())
+				return r
+			}())
 		}
 		r.Get("/", hello)
 		r.Get("/logs", getLogs)
@@ -159,6 +159,12 @@ func router(isDebug bool, secret string, dohServer string, cors Cors) *chi.Mux {
 	return r
 }
 
+// newHandler builds the controller handler. Every listener (tcp, tls, unix
+// socket and namedpipe) enforces the configured secret.
+func newHandler(cfg *Config) http.Handler {
+	return router(cfg.IsDebug, cfg.Secret, cfg.DohServer, cfg.Cors)
+}
+
 func start(cfg *Config) {
 	// first stop existing server
 	if httpServer != nil {
@@ -178,7 +184,7 @@ func start(cfg *Config) {
 		log.Infoln("RESTful API listening at: %s", l.Addr().String())
 
 		server := &http.Server{
-			Handler: router(cfg.IsDebug, cfg.Secret, cfg.DohServer, cfg.Cors),
+			Handler: newHandler(cfg),
 		}
 		httpServer = server
 		if err = server.Serve(l); err != nil {
@@ -239,7 +245,7 @@ func startTLS(cfg *Config) {
 			}
 		}
 		server := &http.Server{
-			Handler: router(cfg.IsDebug, cfg.Secret, cfg.DohServer, cfg.Cors),
+			Handler: newHandler(cfg),
 		}
 		tlsServer = server
 		if err = server.Serve(tls.NewListener(l, tlsConfig)); err != nil {
@@ -276,18 +282,16 @@ func startUnix(cfg *Config) {
 		// should be used to delete the socket file prior to calling bind with the same path.
 		_ = syscall.Unlink(addr)
 
-		lc := inbound.NewListenConfig()
-		lc.SetRouteMark(0) // don't set route mark for unix socket
-		l, err := lc.Listen(context.Background(), "unix", addr)
+		// Only the user the core runs as may connect, see listenUnix.
+		l, err := listenUnix(addr)
 		if err != nil {
 			log.Errorln("External controller unix listen error: %s", err)
 			return
 		}
-		_ = os.Chmod(addr, 0o666)
 		log.Infoln("RESTful API unix listening at: %s", l.Addr().String())
 
 		server := &http.Server{
-			Handler: router(cfg.IsDebug, "", cfg.DohServer, cfg.Cors),
+			Handler: newHandler(cfg),
 		}
 		unixServer = server
 		if err = server.Serve(l); err != nil {
@@ -318,7 +322,7 @@ func startPipe(cfg *Config) {
 		log.Infoln("RESTful API pipe listening at: %s", l.Addr().String())
 
 		server := &http.Server{
-			Handler: router(cfg.IsDebug, "", cfg.DohServer, cfg.Cors),
+			Handler: newHandler(cfg),
 		}
 		pipeServer = server
 		if err = server.Serve(l); err != nil {
