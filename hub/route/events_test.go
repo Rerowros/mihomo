@@ -244,3 +244,149 @@ func TestEventsWebSocket(t *testing.T) {
 	_ = conn.Close()
 	require.Eventually(t, func() bool { return eventbus.Default.Subscribers() == before }, 3*time.Second, 10*time.Millisecond)
 }
+
+// wsReadFrame reads one unmasked server frame with a short payload and
+// returns its opcode.
+func wsReadFrame(r io.Reader) (byte, []byte, error) {
+	var hdr [2]byte
+	if _, err := io.ReadFull(r, hdr[:]); err != nil {
+		return 0, nil, err
+	}
+	n := hdr[1] & 0x7f
+	if n >= 126 {
+		return 0, nil, errors.New("long frame")
+	}
+	buf := make([]byte, n)
+	_, err := io.ReadFull(r, buf)
+	return hdr[0] & 0x0f, buf, err
+}
+
+// openEventsWS opens GET /events as a websocket on addr and returns the
+// status of the handshake.
+func openEventsWS(t *testing.T, addr, query string) (net.Conn, *bufio.Reader, int) {
+	t.Helper()
+	conn, err := net.Dial("tcp", addr)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = conn.Close() })
+	_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
+	_, err = fmt.Fprintf(conn, "GET /events%s HTTP/1.1\r\nHost: test\r\nAuthorization: Bearer %s\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n", query, testSecret)
+	require.NoError(t, err)
+	br := bufio.NewReader(conn)
+	resp, err := stdhttp.ReadResponse(br, nil)
+	require.NoError(t, err)
+	return conn, br, resp.StatusCode
+}
+
+func waitNoStreams(t *testing.T) {
+	t.Helper()
+	require.Eventually(t, func() bool { return eventsStreams.Load() == 0 }, 3*time.Second, 10*time.Millisecond, "streams of earlier tests still open")
+}
+
+// A quiet stream sends a keep-alive, so a reverse proxy (nginx
+// proxy_read_timeout) does not close it.
+func TestEventsHeartbeat(t *testing.T) {
+	old := eventsHeartbeat
+	eventsHeartbeat = 50 * time.Millisecond
+	t.Cleanup(func() { eventsHeartbeat = old })
+	srv := eventsServer(t)
+
+	r, closeStream := openEvents(t, srv, "?types=user.limit", "")
+	t.Cleanup(closeStream) // before the server closes, should a read fail
+	assert.Equal(t, "", readLine(t, r), "NDJSON: an empty line")
+	assert.Equal(t, "", readLine(t, r))
+	closeStream()
+
+	r, closeStream = openEvents(t, srv, "?types=user.limit", "text/event-stream")
+	t.Cleanup(closeStream)
+	assert.Equal(t, ":", readLine(t, r), "SSE: a comment")
+	assert.Equal(t, "", readLine(t, r))
+	closeStream()
+
+	_, br, status := openEventsWS(t, srv.Listener.Addr().String(), "?types=user.limit")
+	require.Equal(t, stdhttp.StatusSwitchingProtocols, status)
+	op, payload, err := wsReadFrame(br)
+	require.NoError(t, err)
+	assert.Equal(t, byte(0x9), op, "websocket: a ping")
+	assert.Empty(t, payload)
+}
+
+func TestEventsStreamLimit(t *testing.T) {
+	waitNoStreams(t)
+	old := eventsMaxStreams
+	eventsMaxStreams = 2
+	t.Cleanup(func() { eventsMaxStreams = old })
+	srv := eventsServer(t)
+	before := eventbus.Default.Subscribers()
+
+	_, close1 := openEvents(t, srv, "", "")
+	_, close2 := openEvents(t, srv, "", "text/event-stream")
+	defer close2()
+
+	req, err := stdhttp.NewRequest(stdhttp.MethodGet, srv.URL+"/events", nil)
+	require.NoError(t, err)
+	req.Header.Set("Authorization", "Bearer "+testSecret)
+	resp, err := stdhttp.DefaultClient.Do(req)
+	require.NoError(t, err)
+	if assert.Equal(t, stdhttp.StatusTooManyRequests, resp.StatusCode) {
+		body, _ := io.ReadAll(resp.Body)
+		assert.Contains(t, string(body), "too many event streams")
+	}
+	_ = resp.Body.Close()
+	_, _, status := openEventsWS(t, srv.Listener.Addr().String(), "")
+	assert.Equal(t, stdhttp.StatusTooManyRequests, status, "the websocket is refused before the upgrade")
+	assert.Equal(t, before+2, eventbus.Default.Subscribers(), "a refused stream holds no subscription")
+
+	// a closed stream frees its place
+	close1()
+	require.Eventually(t, func() bool { return eventsStreams.Load() == 1 }, 3*time.Second, 10*time.Millisecond)
+	_, close3 := openEvents(t, srv, "", "")
+	close3()
+}
+
+// The client goes away from a chunked or SSE stream: the subscription is
+// released without an event to write.
+func TestEventsReleasedOnClientClose(t *testing.T) {
+	srv := eventsServer(t)
+	for _, accept := range []string{"", "text/event-stream"} {
+		before := eventbus.Default.Subscribers()
+		_, closeStream := openEvents(t, srv, "?types=user.limit", accept)
+		require.Equal(t, before+1, eventbus.Default.Subscribers(), accept)
+		closeStream()
+		require.Eventually(t, func() bool { return eventbus.Default.Subscribers() == before }, 3*time.Second, 10*time.Millisecond, "accept %q", accept)
+	}
+}
+
+// Closing the controller server (a restart, possibly with another secret)
+// ends every stream, the hijacked websocket included.
+func TestEventsEndWithControllerServer(t *testing.T) {
+	waitNoStreams(t)
+	before := eventbus.Default.Subscribers()
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	server := newServer(router(false, testSecret, "", Cors{}))
+	go func() { _ = server.Serve(l) }()
+	t.Cleanup(func() { closeServer(server) })
+	addr := l.Addr().String()
+
+	conn, br, status := openEventsWS(t, addr, "")
+	require.Equal(t, stdhttp.StatusSwitchingProtocols, status)
+	req, err := stdhttp.NewRequest(stdhttp.MethodGet, "http://"+addr+"/events", nil)
+	require.NoError(t, err)
+	req.Header.Set("Authorization", "Bearer "+testSecret)
+	resp, err := stdhttp.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	require.Equal(t, stdhttp.StatusOK, resp.StatusCode)
+	require.Equal(t, before+2, eventbus.Default.Subscribers())
+
+	closeServer(server)
+
+	_ = conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+	_, err = br.ReadByte()
+	require.Error(t, err)
+	var ne net.Error
+	require.False(t, errors.As(err, &ne) && ne.Timeout(), "the websocket outlived the server: %v", err)
+	_, _ = io.Copy(io.Discard, resp.Body) // the chunked stream ends with its connection
+	require.Eventually(t, func() bool { return eventbus.Default.Subscribers() == before }, 3*time.Second, 10*time.Millisecond)
+	assert.Equal(t, int64(0), eventsStreams.Load())
+}

@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"runtime/debug"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -99,6 +100,32 @@ func ReCreateServer(cfg *Config) {
 	}
 }
 
+// serverCancels holds the cancel of the base context of every running
+// controller server, see newServer.
+var serverCancels sync.Map // *http.Server -> context.CancelFunc
+
+// newServer returns a controller server whose requests carry a context that
+// closeServer cancels. Server.Close ends the connections it tracks, but not
+// the hijacked ones: without it a websocket stream (/events) opened before a
+// restart of the controller, possibly with another secret, would go on.
+func newServer(handler http.Handler) *http.Server {
+	ctx, cancel := context.WithCancel(context.Background())
+	server := &http.Server{
+		Handler:     handler,
+		BaseContext: func(net.Listener) context.Context { return ctx },
+	}
+	serverCancels.Store(server, cancel)
+	return server
+}
+
+// closeServer closes a server made by newServer and cancels its requests.
+func closeServer(server *http.Server) {
+	_ = server.Close()
+	if cancel, ok := serverCancels.LoadAndDelete(server); ok {
+		cancel.(context.CancelFunc)()
+	}
+}
+
 func SetUIPath(path string) {
 	uiPath = C.Path.Resolve(path)
 }
@@ -170,7 +197,7 @@ func router(isDebug bool, secret string, dohServer string, cors Cors) *chi.Mux {
 func start(cfg *Config) {
 	// first stop existing server
 	if httpServer != nil {
-		_ = httpServer.Close()
+		closeServer(httpServer)
 		httpServer = nil
 	}
 
@@ -185,9 +212,7 @@ func start(cfg *Config) {
 		}
 		log.Infoln("RESTful API listening at: %s", l.Addr().String())
 
-		server := &http.Server{
-			Handler: router(cfg.IsDebug, cfg.Secret, cfg.DohServer, cfg.Cors),
-		}
+		server := newServer(router(cfg.IsDebug, cfg.Secret, cfg.DohServer, cfg.Cors))
 		httpServer = server
 		if err = server.Serve(l); err != nil {
 			log.Errorln("External controller serve error: %s", err)
@@ -198,7 +223,7 @@ func start(cfg *Config) {
 func startTLS(cfg *Config) {
 	// first stop existing server
 	if tlsServer != nil {
-		_ = tlsServer.Close()
+		closeServer(tlsServer)
 		tlsServer = nil
 	}
 
@@ -246,9 +271,7 @@ func startTLS(cfg *Config) {
 				return
 			}
 		}
-		server := &http.Server{
-			Handler: router(cfg.IsDebug, cfg.Secret, cfg.DohServer, cfg.Cors),
-		}
+		server := newServer(router(cfg.IsDebug, cfg.Secret, cfg.DohServer, cfg.Cors))
 		tlsServer = server
 		if err = server.Serve(tls.NewListener(l, tlsConfig)); err != nil {
 			log.Errorln("External controller tls serve error: %s", err)
@@ -259,7 +282,7 @@ func startTLS(cfg *Config) {
 func startUnix(cfg *Config) {
 	// first stop existing server
 	if unixServer != nil {
-		_ = unixServer.Close()
+		closeServer(unixServer)
 		unixServer = nil
 	}
 
@@ -294,9 +317,7 @@ func startUnix(cfg *Config) {
 		_ = os.Chmod(addr, 0o666)
 		log.Infoln("RESTful API unix listening at: %s", l.Addr().String())
 
-		server := &http.Server{
-			Handler: router(cfg.IsDebug, "", cfg.DohServer, cfg.Cors),
-		}
+		server := newServer(router(cfg.IsDebug, "", cfg.DohServer, cfg.Cors))
 		unixServer = server
 		if err = server.Serve(l); err != nil {
 			log.Errorln("External controller unix serve error: %s", err)
@@ -307,7 +328,7 @@ func startUnix(cfg *Config) {
 func startPipe(cfg *Config) {
 	// first stop existing server
 	if pipeServer != nil {
-		_ = pipeServer.Close()
+		closeServer(pipeServer)
 		pipeServer = nil
 	}
 
@@ -325,9 +346,7 @@ func startPipe(cfg *Config) {
 		}
 		log.Infoln("RESTful API pipe listening at: %s", l.Addr().String())
 
-		server := &http.Server{
-			Handler: router(cfg.IsDebug, "", cfg.DohServer, cfg.Cors),
-		}
+		server := newServer(router(cfg.IsDebug, "", cfg.DohServer, cfg.Cors))
 		pipeServer = server
 		if err = server.Serve(l); err != nil {
 			log.Errorln("External controller pipe serve error: %s", err)
