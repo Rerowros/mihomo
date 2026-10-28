@@ -435,6 +435,10 @@ type RawUserLimit struct {
 	Inbound  string `yaml:"inbound" json:"inbound"`
 	User     string `yaml:"user" json:"user"`
 	MaxConns int    `yaml:"max-conns,omitempty" json:"max-conns,omitempty"`
+	// MaxIPs limits the client addresses of the user name on all inbounds;
+	// not safe behind a CDN or a proxy without the PROXY protocol, where all
+	// clients share one address. 0 means no limit.
+	MaxIPs   int    `yaml:"max-ips,omitempty" json:"max-ips,omitempty"`
 	UpBps    int64  `yaml:"up-bps,omitempty" json:"up-bps,omitempty"`
 	DownBps  int64  `yaml:"down-bps,omitempty" json:"down-bps,omitempty"`
 	Quota    int64  `yaml:"quota,omitempty" json:"quota,omitempty"`
@@ -446,6 +450,7 @@ func (r RawUserLimit) Build() (statistic.UserLimit, error) {
 		Inbound:  r.Inbound,
 		User:     r.User,
 		MaxConns: r.MaxConns,
+		MaxIPs:   r.MaxIPs,
 		UpBps:    r.UpBps,
 		DownBps:  r.DownBps,
 		Quota:    r.Quota,

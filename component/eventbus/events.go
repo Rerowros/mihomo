@@ -27,7 +27,7 @@ type UserSession struct {
 type UserLimit struct {
 	Inbound string `json:"inbound"`
 	User    string `json:"user"`
-	// Reason is "quota", "expired" or "max-conns".
+	// Reason is "quota", "expired", "max-conns" or "max-ips".
 	Reason string `json:"reason"`
 	// Action is "closed" (the quota was used up or the user expired: its
 	// connections are closed) or "rejected" (a new connection was refused).
@@ -35,6 +35,9 @@ type UserLimit struct {
 	// Suppressed is the number of rejections of the user not reported since
 	// the previous rejected event (a user is reported at most once a second).
 	Suppressed int64 `json:"suppressed,omitempty"`
+	// Remote is the refused client address of a max-ips rejection (IPv6 in
+	// brackets); the suppressed rejections may have come from others.
+	Remote string `json:"remote,omitempty"`
 }
 
 // Actions of a user.limit event.
