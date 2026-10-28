@@ -448,6 +448,28 @@ func TestVlessSetUsersKeys(t *testing.T) {
 	assert.True(t, errors.Is(err, C.ErrInvalidInboundUser), "names differing only in case: %v", err)
 }
 
+// S-2: duplicates in the config do not stop the inbound from loading: the
+// first user is kept, the duplicate (by name in any case, or by id) is dropped.
+func TestVlessConfigDropsDuplicateUsers(t *testing.T) {
+	rec := newRevokeRecorder()
+	uuidA := utils.NewUUIDV4().String()
+	uuidB := utils.NewUUIDV4().String()
+	in, addr := startRevokeVless(t, rec, []inbound.VlessUser{
+		{Username: "Alice", UUID: uuidA},
+		{Username: "alice", UUID: uuidB},
+		{Username: "bob", UUID: strings.ToUpper(uuidA)},
+	}, nil)
+
+	users := in.GetUsers()
+	require.Len(t, users, 1)
+	assert.Equal(t, "Alice", users[0].Username)
+	assert.Equal(t, uuidA, users[0].UUID)
+
+	dialEcho(t, newRevokeClient(t, addr, uuidA, nil))
+	assert.Positive(t, rec.tcp("Alice"))
+	assert.Zero(t, rec.tcp("bob"))
+}
+
 func setVlessUsers(t *testing.T, in *inbound.Vless, users []C.InboundUser) C.InboundUserChange {
 	t.Helper()
 	change, err := in.SetUsers(users)

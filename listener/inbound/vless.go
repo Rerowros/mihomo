@@ -105,16 +105,22 @@ func NewVless(options *VlessOption) (*Vless, error) {
 	if err != nil {
 		return nil, err
 	}
-	users := make([]LC.VlessUser, len(options.Users))
-	for i, v := range options.Users {
-		users[i] = LC.VlessUser{
+	users := make([]LC.VlessUser, 0, len(options.Users))
+	seen := newVlessUserSet(len(options.Users))
+	for _, v := range options.Users {
+		user := LC.VlessUser{
 			Username: v.Username,
 			UUID:     v.UUID,
 			Flow:     v.Flow,
 		}
-	}
-	if err := checkVlessUsers(users); err != nil {
-		return nil, err
+		// A duplicate in the config must not stop mihomo from starting: the
+		// first user is kept, the duplicate is dropped with a warning. The
+		// API paths (SetUsers) still reject duplicates.
+		if err := seen.add(user); err != nil {
+			log.Warnln("Vless[%s]: user %q dropped: %v", base.Name(), v.Username, err)
+			continue
+		}
+		users = append(users, user)
 	}
 	return &Vless{
 		Base:   base,
@@ -221,22 +227,41 @@ func (v *Vless) SetUsers(users []C.InboundUser) (C.InboundUserChange, error) {
 // that map to one key. The key is utils.UUIDMap, as in the handshake, so a
 // UUID in another case or a string id equal to another user's is caught.
 func checkVlessUsers(users []LC.VlessUser) error {
-	names := make(map[string]struct{}, len(users))
-	keys := make(map[[16]byte]string, len(users))
+	seen := newVlessUserSet(len(users))
 	for _, user := range users {
-		if user.Username != "" {
-			name := strings.ToLower(user.Username)
-			if _, ok := names[name]; ok {
-				return fmt.Errorf("%w: duplicate user name %q", C.ErrInvalidInboundUser, user.Username)
-			}
-			names[name] = struct{}{}
+		if err := seen.add(user); err != nil {
+			return err
 		}
-		key := utils.UUIDMap(user.UUID)
-		if other, ok := keys[key]; ok {
-			return fmt.Errorf("%w: users %q and %q have the same id", C.ErrInvalidInboundUser, other, user.Username)
-		}
-		keys[key] = user.Username
 	}
+	return nil
+}
+
+// vlessUserSet holds the names and keys of the users accepted so far.
+type vlessUserSet struct {
+	names map[string]struct{}
+	keys  map[[16]byte]string
+}
+
+func newVlessUserSet(n int) vlessUserSet {
+	return vlessUserSet{names: make(map[string]struct{}, n), keys: make(map[[16]byte]string, n)}
+}
+
+// add accepts user unless its name or key collides with an accepted user.
+func (s vlessUserSet) add(user LC.VlessUser) error {
+	name := strings.ToLower(user.Username)
+	if user.Username != "" {
+		if _, ok := s.names[name]; ok {
+			return fmt.Errorf("%w: duplicate user name %q", C.ErrInvalidInboundUser, user.Username)
+		}
+	}
+	key := utils.UUIDMap(user.UUID)
+	if other, ok := s.keys[key]; ok {
+		return fmt.Errorf("%w: users %q and %q have the same id", C.ErrInvalidInboundUser, other, user.Username)
+	}
+	if user.Username != "" {
+		s.names[name] = struct{}{}
+	}
+	s.keys[key] = user.Username
 	return nil
 }
 
