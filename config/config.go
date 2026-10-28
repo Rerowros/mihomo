@@ -208,6 +208,7 @@ type Config struct {
 	Users         []auth.AuthUser
 	UserLimits    []statistic.UserLimit
 	XrayAPI       *XrayAPI
+	Metrics       *Metrics
 	Proxies       map[string]C.Proxy
 	Listeners     map[string]C.InboundListener
 	Providers     map[string]P.ProxyProvider
@@ -414,6 +415,22 @@ type RawXrayAPI struct {
 	Listen string `yaml:"listen" json:"listen"`
 }
 
+// Metrics is the `metrics` section and `health-without-auth`.
+type Metrics struct {
+	// Enable serves GET /metrics on the controller.
+	Enable bool `json:"enable"`
+	// PerUser adds the series of every inbound user (high cardinality).
+	PerUser bool `json:"per-user"`
+	// HealthWithoutAuth serves GET /healthz and GET /readyz without the
+	// controller secret.
+	HealthWithoutAuth bool `json:"health-without-auth"`
+}
+
+type RawMetrics struct {
+	Enable  bool `yaml:"enable" json:"enable"`
+	PerUser bool `yaml:"per-user" json:"per-user"`
+}
+
 // RawUserLimit is the YAML/JSON form of one per-user limit.
 type RawUserLimit struct {
 	Inbound  string `yaml:"inbound" json:"inbound"`
@@ -501,6 +518,7 @@ type RawConfig struct {
 	GeodataLoader                 string                  `yaml:"geodata-loader" json:"geodata-loader"`
 	GeositeMatcher                string                  `yaml:"geosite-matcher" json:"geosite-matcher"`
 	TCPConcurrent                 bool                    `yaml:"tcp-concurrent" json:"tcp-concurrent"`
+	HealthWithoutAuth             bool                    `yaml:"health-without-auth" json:"health-without-auth"`
 	FindProcessMode               process.FindProcessMode `yaml:"find-process-mode" json:"find-process-mode"`
 	GlobalClientFingerprint       string                  `yaml:"global-client-fingerprint" json:"global-client-fingerprint"`
 	GlobalUA                      string                  `yaml:"global-ua" json:"global-ua"`
@@ -518,6 +536,7 @@ type RawConfig struct {
 	Listeners     []map[string]any          `yaml:"listeners" json:"listeners"`
 	UserLimits    []RawUserLimit            `yaml:"user-limits" json:"user-limits"`
 	XrayAPI       RawXrayAPI                `yaml:"xray-api" json:"xray-api"`
+	Metrics       RawMetrics                `yaml:"metrics" json:"metrics"`
 	Hosts         map[string]any            `yaml:"hosts" json:"hosts"`
 	DNS           RawDNS                    `yaml:"dns" json:"dns"`
 	NTP           RawNTP                    `yaml:"ntp" json:"ntp"`
@@ -756,6 +775,11 @@ func ParseRawConfig(rawCfg *RawConfig) (*Config, error) {
 	}
 	config.UserLimits = userLimits
 	config.XrayAPI = &XrayAPI{Listen: rawCfg.XrayAPI.Listen}
+	config.Metrics = &Metrics{
+		Enable:            rawCfg.Metrics.Enable,
+		PerUser:           rawCfg.Metrics.PerUser,
+		HealthWithoutAuth: rawCfg.HealthWithoutAuth,
+	}
 
 	log.Infoln("Geodata Loader mode: %s", geodata.LoaderName())
 	log.Infoln("Geosite Matcher implementation: %s", geodata.SiteMatcherName())

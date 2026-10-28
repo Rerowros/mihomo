@@ -8,6 +8,7 @@ import (
 	"sync"
 
 	"github.com/metacubex/mihomo/adapter/inbound"
+	"github.com/metacubex/mihomo/component/eventbus"
 	C "github.com/metacubex/mihomo/constant"
 	LC "github.com/metacubex/mihomo/listener/config"
 	"github.com/metacubex/mihomo/listener/http"
@@ -42,6 +43,7 @@ var (
 	tunnelTCPListeners  = map[string]*LT.Listener{}
 	tunnelUDPListeners  = map[string]*LT.PacketConn{}
 	inboundListeners    = map[string]C.InboundListener{}
+	failedListeners     = map[string]struct{}{} // listeners of the configuration that failed to listen
 	tunLister           *sing_tun.Listener
 	shadowSocksListener C.MultiAddrListener
 	vmessListener       *sing_vmess.Listener
@@ -638,12 +640,19 @@ func PatchInboundListeners(newListenerMap map[string]C.InboundListener, tunnel C
 		}
 		if err := newListener.Listen(tunnel); err != nil {
 			log.Errorln("Listener %s listen err: %s", name, err.Error())
+			failedListeners[name] = struct{}{}
 			continue
 		}
+		delete(failedListeners, name)
 		inboundListeners[name] = newListener
 	}
 
 	if dropOld {
+		for name := range failedListeners {
+			if _, ok := newListenerMap[name]; !ok {
+				delete(failedListeners, name)
+			}
+		}
 		for name, oldListener := range inboundListeners {
 			if _, ok := newListenerMap[name]; !ok {
 				_ = oldListener.Close()
@@ -651,6 +660,15 @@ func PatchInboundListeners(newListenerMap map[string]C.InboundListener, tunnel C
 			}
 		}
 	}
+}
+
+// FailedInboundListeners returns the number of listeners of the last applied
+// configuration that failed to listen (the port is taken, a certificate is
+// missing and so on); readiness requires it to be zero.
+func FailedInboundListeners() int {
+	inboundMux.RLock()
+	defer inboundMux.RUnlock()
+	return len(failedListeners)
 }
 
 // GetInboundListener returns the live inbound listener registered under name.
@@ -698,7 +716,22 @@ func UpdateInboundUsers(name string, update func([]C.InboundUser) ([]C.InboundUs
 	if err != nil {
 		return C.InboundUserChange{}, err
 	}
-	return manager.SetUsers(users)
+	change, err := manager.SetUsers(users)
+	publishUserRevoked(name, change, err)
+	return change, err
+}
+
+// publishUserRevoked reports the users of inbound name that a runtime update
+// of its user table revoked.
+func publishUserRevoked(name string, change C.InboundUserChange, err error) {
+	if err != nil || len(change.Revoked) == 0 || !eventbus.Enabled(eventbus.TypeUserRevoked) {
+		return
+	}
+	eventbus.Publish(eventbus.TypeUserRevoked, eventbus.UserRevoked{
+		Inbound: name,
+		Users:   append([]string(nil), change.Revoked...),
+		Closed:  change.Closed,
+	})
 }
 
 // GetInboundUsers returns the runtime user table of an inbound.
@@ -732,7 +765,9 @@ func SetInboundUsers(name string, users []C.InboundUser) (C.InboundUserChange, e
 	if !ok {
 		return C.InboundUserChange{}, C.ErrInboundNoUserTable
 	}
-	return manager.SetUsers(users)
+	change, err := manager.SetUsers(users)
+	publishUserRevoked(name, change, err)
+	return change, err
 }
 
 // GetPorts return the ports of proxy servers

@@ -6,6 +6,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/metacubex/mihomo/component/eventbus"
 	C "github.com/metacubex/mihomo/constant"
 )
 
@@ -31,6 +32,12 @@ type userCounters struct {
 	download   atomic.Int64
 	conns      atomic.Int64
 	lastActive atomic.Int64 // unix seconds
+
+	// drainedUp and drainedDown keep what the resets took from upload and
+	// download, so the cumulative totals (Totals, /metrics) never go down.
+	// They change only under UserManager.resetMu, off the hot path.
+	drainedUp   atomic.Int64
+	drainedDown atomic.Int64
 }
 
 // UserManager keeps the per-user traffic counters of the inbounds. The
@@ -40,6 +47,9 @@ type userCounters struct {
 type UserManager struct {
 	mu    sync.RWMutex
 	users map[UserKey]*userCounters
+	// resetMu orders the resets against Totals, so a reset is never seen
+	// half done (taken from the counter but not yet added to the drained).
+	resetMu sync.Mutex
 }
 
 // DefaultUserManager is filled by the inbound trackers.
@@ -61,16 +71,32 @@ func (m *UserManager) counters(key UserKey) *userCounters {
 	return counters
 }
 
-// Open records a new connection of the user.
-func (m *UserManager) Open(key UserKey) {
+// Open records a new connection of the user and reports whether it is the
+// only open one (the user came online).
+func (m *UserManager) Open(key UserKey) (first bool) {
 	counters := m.counters(key)
-	counters.conns.Add(1)
+	first = counters.conns.Add(1) == 1
 	counters.lastActive.Store(time.Now().Unix())
+	return first
 }
 
-// Close records the end of one connection.
-func (m *UserManager) Close(key UserKey) {
-	m.counters(key).conns.Add(-1)
+// Close records the end of one connection and reports whether it was the
+// last open one (the user went offline).
+func (m *UserManager) Close(key UserKey) (last bool) {
+	return m.counters(key).conns.Add(-1) == 0
+}
+
+// publishUserSession reports a user that came online or went offline; it
+// costs one atomic load while nobody listens to GET /events.
+func publishUserSession(key UserKey, state string, metadata *C.Metadata) {
+	if !eventbus.Enabled(eventbus.TypeUserSession) {
+		return
+	}
+	d := eventbus.UserSession{Inbound: key.Inbound, User: key.User, State: state}
+	if metadata != nil && metadata.SrcIP.IsValid() {
+		d.Remote = metadata.SrcIP.Unmap().String()
+	}
+	eventbus.Publish(eventbus.TypeUserSession, d)
 }
 
 // PushUploaded adds uploaded payload bytes to the user.
@@ -123,19 +149,72 @@ func (m *UserManager) ResetTraffic(inbound, user string, resetUpload, resetDownl
 	if len(counters) == 0 {
 		return 0, 0, false
 	}
+	m.resetMu.Lock()
+	defer m.resetMu.Unlock()
 	for _, c := range counters {
 		if resetUpload {
-			upload += c.upload.Swap(0)
+			upload += c.drainUp()
 		} else {
 			upload += c.upload.Load()
 		}
 		if resetDownload {
-			download += c.download.Swap(0)
+			download += c.drainDown()
 		} else {
 			download += c.download.Load()
 		}
 	}
 	return upload, download, true
+}
+
+// drainUp and drainDown zero a counter and keep what it held in the
+// cumulative total; the caller holds UserManager.resetMu.
+func (c *userCounters) drainUp() int64 {
+	v := c.upload.Swap(0)
+	c.drainedUp.Add(v)
+	return v
+}
+
+func (c *userCounters) drainDown() int64 {
+	v := c.download.Swap(0)
+	c.drainedDown.Add(v)
+	return v
+}
+
+// UserTotal is the cumulative traffic of one user since the start of the
+// process: the resets of the panel API (Snapshot, ResetTraffic, Xray
+// QueryStats with reset) do not lower it, so it is a Prometheus counter.
+type UserTotal struct {
+	Inbound  string
+	User     string
+	Upload   int64
+	Download int64
+	Conns    int64
+}
+
+// Totals returns the cumulative traffic and the open connections of every
+// user, sorted by inbound and user.
+func (m *UserManager) Totals() []UserTotal {
+	m.resetMu.Lock()
+	defer m.resetMu.Unlock()
+	m.mu.RLock()
+	totals := make([]UserTotal, 0, len(m.users))
+	for key, c := range m.users {
+		totals = append(totals, UserTotal{
+			Inbound:  key.Inbound,
+			User:     key.User,
+			Upload:   c.drainedUp.Load() + c.upload.Load(),
+			Download: c.drainedDown.Load() + c.download.Load(),
+			Conns:    c.conns.Load(),
+		})
+	}
+	m.mu.RUnlock()
+	sort.Slice(totals, func(i, j int) bool {
+		if totals[i].Inbound != totals[j].Inbound {
+			return totals[i].Inbound < totals[j].Inbound
+		}
+		return totals[i].User < totals[j].User
+	})
+	return totals
 }
 
 // Snapshot returns the counters, optionally filtered by inbound and user. With
@@ -163,6 +242,10 @@ func (m *UserManager) Snapshot(inbound, user string, reset bool) []UserStat {
 		return keys[i].User < keys[j].User
 	})
 
+	if reset {
+		m.resetMu.Lock()
+		defer m.resetMu.Unlock()
+	}
 	stats := make([]UserStat, 0, len(keys))
 	for _, key := range keys {
 		m.mu.RLock()
@@ -174,8 +257,8 @@ func (m *UserManager) Snapshot(inbound, user string, reset bool) []UserStat {
 		upload := counters.upload.Load()
 		download := counters.download.Load()
 		if reset {
-			upload = counters.upload.Swap(0)
-			download = counters.download.Swap(0)
+			upload = counters.drainUp()
+			download = counters.drainDown()
 		}
 		stats = append(stats, UserStat{
 			Inbound:    key.Inbound,
