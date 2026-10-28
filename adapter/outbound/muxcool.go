@@ -138,8 +138,10 @@ func (x *MuxCool) ListenPacketContext(ctx context.Context, metadata *C.Metadata)
 	return NewPacketConn(packetConn, x), nil
 }
 
+// SupportUDP follows the base proxy, so `udp: false` still disables UDP even
+// though mux.cool could carry it over TCP carriers.
 func (x *MuxCool) SupportUDP() bool {
-	return true
+	return x.ProxyAdapter.SupportUDP()
 }
 
 func (x *MuxCool) SupportUOT() bool {

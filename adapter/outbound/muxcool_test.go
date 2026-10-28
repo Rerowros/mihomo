@@ -187,7 +187,6 @@ func TestMuxCoolDialContextDelegatesUDPStreams(t *testing.T) {
 
 func TestMuxCoolPoolsUDPAndDerivesXUDPGlobalID(t *testing.T) {
 	base := newFakeMuxCoolAdapter()
-	base.Base.udp = false
 	wrapped, err := NewMuxCool(MuxCoolOption{Enabled: true}, base)
 	if err != nil {
 		t.Fatal(err)
@@ -257,6 +256,20 @@ func TestMuxCoolPoolsUDPAndDerivesXUDPGlobalID(t *testing.T) {
 	}
 	if !wrapped.SupportUDP() || !wrapped.SupportUOT() || !wrapped.ProxyInfo().XUDP {
 		t.Fatalf("capabilities = UDP %t UOT %t XUDP %t", wrapped.SupportUDP(), wrapped.SupportUOT(), wrapped.ProxyInfo().XUDP)
+	}
+}
+
+// `udp: false` on the base proxy must keep UDP off through mux.cool.
+func TestMuxCoolSupportUDPFollowsBase(t *testing.T) {
+	base := newFakeMuxCoolAdapter()
+	base.Base = NewBase(BaseOption{Name: "fake", Addr: "fake:0", Type: C.Direct, UDP: false})
+	wrapped, err := NewMuxCool(MuxCoolOption{Enabled: true}, base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = wrapped.Close() })
+	if wrapped.SupportUDP() {
+		t.Fatal("SupportUDP = true for a base proxy without UDP")
 	}
 }
 
