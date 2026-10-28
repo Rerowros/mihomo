@@ -19,6 +19,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/metacubex/mihomo/component/eventbus"
 	C "github.com/metacubex/mihomo/constant"
 	"github.com/metacubex/mihomo/listener"
 	"github.com/metacubex/mihomo/tunnel"
@@ -80,15 +81,9 @@ func Write(out io.Writer, o Options) error {
 	writeInbounds(w)
 	writeUsers(w, o.PerUser)
 	writeLimits(w)
-	for _, extra := range extraWriters {
-		extra(w)
-	}
+	writeEvents(w)
 	return bw.Flush()
 }
-
-// extraWriters are the families of other parts of the core (the event
-// stream), registered in init so this file does not grow with them.
-var extraWriters []func(writer)
 
 // runtime/metrics samples.
 var (
@@ -270,6 +265,19 @@ func writeLimits(w writer) {
 	for i, n := range statistic.DefaultLimitManager.Rejections() {
 		w.int("mihomo_user_limit_rejections_total", int64(n), "reason", statistic.RejectReasons[i])
 	}
+}
+
+// writeEvents reports the event stream (GET /events).
+func writeEvents(w writer) {
+	b := eventbus.Default
+	w.family("mihomo_event_subscribers", "gauge", "Open GET /events streams.")
+	w.int("mihomo_event_subscribers", int64(b.Subscribers()))
+	w.family("mihomo_events_published_total", "counter", "Events delivered to at least one GET /events stream, by type.")
+	for i, n := range b.Published() {
+		w.int("mihomo_events_published_total", int64(n), "type", eventbus.Types[i])
+	}
+	w.family("mihomo_events_dropped_total", "counter", "Events dropped for GET /events streams that read too slowly.")
+	w.int("mihomo_events_dropped_total", int64(b.Dropped()))
 }
 
 func sortedKeys(m map[string]int64) []string {

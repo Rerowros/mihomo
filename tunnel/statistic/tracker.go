@@ -11,6 +11,7 @@ import (
 	"github.com/metacubex/mihomo/common/buf"
 	N "github.com/metacubex/mihomo/common/net"
 	"github.com/metacubex/mihomo/common/utils"
+	"github.com/metacubex/mihomo/component/eventbus"
 	C "github.com/metacubex/mihomo/constant"
 
 	"github.com/gofrs/uuid/v5"
@@ -221,8 +222,8 @@ func (tt *tcpTracker) UnwrapWriter() (io.Writer, []N.CountFunc) {
 func (tt *tcpTracker) Close() error {
 	tt.manager.Leave(tt)
 	tt.userCloseOnce.Do(func() {
-		if tt.userStats {
-			DefaultUserManager.Close(tt.user)
+		if tt.userStats && DefaultUserManager.Close(tt.user) {
+			publishUserSession(tt.user, eventbus.SessionOffline, nil)
 		}
 		tt.admission.Release()
 		// Seen by bindSession if Close wins the race with release.Store.
@@ -292,7 +293,9 @@ func NewTCPTrackerAdmitted(conn C.Conn, manager *Manager, metadata *C.Metadata, 
 		if t.userStats {
 			t.pushUserUploaded(uploadTotal)
 			t.pushUserDownloaded(downloadTotal)
-			DefaultUserManager.Open(t.user)
+			if DefaultUserManager.Open(t.user) {
+				publishUserSession(t.user, eventbus.SessionOnline, metadata)
+			}
 		}
 	}
 
@@ -445,8 +448,8 @@ func (ut *udpTracker) WriteTo(b []byte, addr net.Addr) (int, error) {
 func (ut *udpTracker) Close() error {
 	ut.manager.Leave(ut)
 	ut.userCloseOnce.Do(func() {
-		if ut.userStats {
-			DefaultUserManager.Close(ut.user)
+		if ut.userStats && DefaultUserManager.Close(ut.user) {
+			publishUserSession(ut.user, eventbus.SessionOffline, nil)
 		}
 		ut.admission.Release()
 		// Seen by bindSession if Close wins the race with release.Store.
@@ -511,7 +514,9 @@ func NewUDPTrackerAdmitted(conn C.PacketConn, manager *Manager, metadata *C.Meta
 		if ut.userStats {
 			ut.pushUserUploaded(uploadTotal)
 			ut.pushUserDownloaded(downloadTotal)
-			DefaultUserManager.Open(ut.user)
+			if DefaultUserManager.Open(ut.user) {
+				publishUserSession(ut.user, eventbus.SessionOnline, metadata)
+			}
 		}
 	}
 

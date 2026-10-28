@@ -6,6 +6,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/metacubex/mihomo/component/eventbus"
 )
 
 var (
@@ -94,6 +96,13 @@ type limitState struct {
 	used  int64
 	up    *rateLimiter
 	down  *rateLimiter
+
+	// The event stream state, guarded by mu: expiry is reported once per
+	// expire-at, rejections at most once a second with the count of the
+	// ones in between.
+	expiredReported bool
+	lastReject      time.Time
+	suppressed      int64
 }
 
 // release lifts the rate limits of a state that left the table: relays
@@ -207,7 +216,36 @@ func (s *limitState) setLimit(limit UserLimit) {
 	if limit.DownBps != s.limit.DownBps {
 		s.down.setRate(limit.DownBps)
 	}
+	if limit.ExpireAt != s.limit.ExpireAt {
+		s.expiredReported = false
+	}
 	s.limit = limit
+}
+
+// rejectEventInterval is how often the rejections of one user are reported.
+var rejectEventInterval = time.Second
+
+// rejectEvent decides, under s.mu, whether a rejection is reported now and
+// with how many earlier ones folded in; ok is false while nobody listens.
+func (s *limitState) rejectEvent(now time.Time) (suppressed int64, ok bool) {
+	if !eventbus.Enabled(eventbus.TypeUserLimit) {
+		return 0, false
+	}
+	if !s.lastReject.IsZero() && now.Sub(s.lastReject) < rejectEventInterval {
+		s.suppressed++
+		return 0, false
+	}
+	s.lastReject = now
+	suppressed, s.suppressed = s.suppressed, 0
+	return suppressed, true
+}
+
+// publishLimit reports a user whose connections are closed (quota used up,
+// expired) or whose new connection was refused.
+func publishLimit(key UserKey, reason, action string, suppressed int64) {
+	eventbus.Publish(eventbus.TypeUserLimit, eventbus.UserLimit{
+		Inbound: key.Inbound, User: key.User, Reason: reason, Action: action, Suppressed: suppressed,
+	})
 }
 
 // Replace sets the whole policy table. Usage of users that keep a policy is
@@ -310,21 +348,30 @@ func (m *LimitManager) Admit(key UserKey) (*Admission, error) {
 		return nil, nil
 	}
 	state.mu.Lock()
-	defer state.mu.Unlock()
-	if state.expired(time.Now()) {
+	now := time.Now()
+	var reason string
+	var err error
+	switch {
+	case state.expired(now):
 		m.rejectedExpired.Add(1)
-		return nil, ErrUserLimitExpired
-	}
-	if state.limit.Quota > 0 && state.used >= state.limit.Quota {
+		reason, err = RejectExpired, ErrUserLimitExpired
+	case state.limit.Quota > 0 && state.used >= state.limit.Quota:
 		m.rejectedQuota.Add(1)
-		return nil, ErrUserQuotaExceeded
-	}
-	if state.limit.MaxConns > 0 && state.conns >= state.limit.MaxConns {
+		reason, err = RejectQuota, ErrUserQuotaExceeded
+	case state.limit.MaxConns > 0 && state.conns >= state.limit.MaxConns:
 		m.rejectedMaxConns.Add(1)
-		return nil, ErrUserMaxConns
+		reason, err = RejectMaxConns, ErrUserMaxConns
+	default:
+		state.conns++
+		state.mu.Unlock()
+		return &Admission{state: state}, nil
 	}
-	state.conns++
-	return &Admission{state: state}, nil
+	suppressed, report := state.rejectEvent(now)
+	state.mu.Unlock()
+	if report {
+		publishLimit(key, reason, eventbus.LimitRejected, suppressed)
+	}
+	return nil, err
 }
 
 // AddUsage counts payload bytes against the quota and reports whether the
@@ -335,9 +382,14 @@ func (m *LimitManager) AddUsage(key UserKey, n int64) bool {
 		return false
 	}
 	state.mu.Lock()
+	before := state.used
 	state.used += n
 	exceeded := state.limit.Quota > 0 && state.used >= state.limit.Quota
+	crossed := exceeded && before < state.limit.Quota
 	state.mu.Unlock()
+	if crossed && eventbus.Enabled(eventbus.TypeUserLimit) {
+		publishLimit(key, RejectQuota, eventbus.LimitClosed, 0)
+	}
 	return exceeded
 }
 
@@ -348,8 +400,16 @@ func (m *LimitManager) Expired(key UserKey) bool {
 		return false
 	}
 	state.mu.Lock()
-	defer state.mu.Unlock()
-	return state.expired(time.Now())
+	expired := state.expired(time.Now())
+	first := expired && !state.expiredReported
+	if first {
+		state.expiredReported = true
+	}
+	state.mu.Unlock()
+	if first && eventbus.Enabled(eventbus.TypeUserLimit) {
+		publishLimit(key, RejectExpired, eventbus.LimitClosed, 0)
+	}
+	return expired
 }
 
 // WaitUpload and WaitDownload throttle the user's relay.

@@ -8,6 +8,7 @@ import (
 	"sync"
 
 	"github.com/metacubex/mihomo/adapter/inbound"
+	"github.com/metacubex/mihomo/component/eventbus"
 	C "github.com/metacubex/mihomo/constant"
 	LC "github.com/metacubex/mihomo/listener/config"
 	"github.com/metacubex/mihomo/listener/http"
@@ -715,7 +716,22 @@ func UpdateInboundUsers(name string, update func([]C.InboundUser) ([]C.InboundUs
 	if err != nil {
 		return C.InboundUserChange{}, err
 	}
-	return manager.SetUsers(users)
+	change, err := manager.SetUsers(users)
+	publishUserRevoked(name, change, err)
+	return change, err
+}
+
+// publishUserRevoked reports the users of inbound name that a runtime update
+// of its user table revoked.
+func publishUserRevoked(name string, change C.InboundUserChange, err error) {
+	if err != nil || len(change.Revoked) == 0 || !eventbus.Enabled(eventbus.TypeUserRevoked) {
+		return
+	}
+	eventbus.Publish(eventbus.TypeUserRevoked, eventbus.UserRevoked{
+		Inbound: name,
+		Users:   append([]string(nil), change.Revoked...),
+		Closed:  change.Closed,
+	})
 }
 
 // GetInboundUsers returns the runtime user table of an inbound.
@@ -749,7 +765,9 @@ func SetInboundUsers(name string, users []C.InboundUser) (C.InboundUserChange, e
 	if !ok {
 		return C.InboundUserChange{}, C.ErrInboundNoUserTable
 	}
-	return manager.SetUsers(users)
+	change, err := manager.SetUsers(users)
+	publishUserRevoked(name, change, err)
+	return change, err
 }
 
 // GetPorts return the ports of proxy servers

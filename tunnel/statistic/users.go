@@ -6,6 +6,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/metacubex/mihomo/component/eventbus"
 	C "github.com/metacubex/mihomo/constant"
 )
 
@@ -70,16 +71,32 @@ func (m *UserManager) counters(key UserKey) *userCounters {
 	return counters
 }
 
-// Open records a new connection of the user.
-func (m *UserManager) Open(key UserKey) {
+// Open records a new connection of the user and reports whether it is the
+// only open one (the user came online).
+func (m *UserManager) Open(key UserKey) (first bool) {
 	counters := m.counters(key)
-	counters.conns.Add(1)
+	first = counters.conns.Add(1) == 1
 	counters.lastActive.Store(time.Now().Unix())
+	return first
 }
 
-// Close records the end of one connection.
-func (m *UserManager) Close(key UserKey) {
-	m.counters(key).conns.Add(-1)
+// Close records the end of one connection and reports whether it was the
+// last open one (the user went offline).
+func (m *UserManager) Close(key UserKey) (last bool) {
+	return m.counters(key).conns.Add(-1) == 0
+}
+
+// publishUserSession reports a user that came online or went offline; it
+// costs one atomic load while nobody listens to GET /events.
+func publishUserSession(key UserKey, state string, metadata *C.Metadata) {
+	if !eventbus.Enabled(eventbus.TypeUserSession) {
+		return
+	}
+	d := eventbus.UserSession{Inbound: key.Inbound, User: key.User, State: state}
+	if metadata != nil && metadata.SrcIP.IsValid() {
+		d.Remote = metadata.SrcIP.Unmap().String()
+	}
+	eventbus.Publish(eventbus.TypeUserSession, d)
 }
 
 // PushUploaded adds uploaded payload bytes to the user.

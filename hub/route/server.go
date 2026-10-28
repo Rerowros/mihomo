@@ -127,6 +127,7 @@ func router(isDebug bool, secret string, dohServer string, cors Cors) *chi.Mux {
 		r.Get("/logs", getLogs)
 		r.Get("/traffic", traffic)
 		r.Get("/traffic/users", trafficUsers)
+		r.Get("/events", getEvents)
 		r.Get("/memory", memory)
 		r.Get("/metrics", getMetrics)
 		r.Get("/version", version)
