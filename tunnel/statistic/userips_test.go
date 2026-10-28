@@ -393,6 +393,23 @@ func TestRevokedReleaseKeepsSharedEntry(t *testing.T) {
 	require.ErrorIs(t, err, ErrUserMaxIPs, "a revoked connection ended the window of a live one")
 }
 
+// A live connection that closes while a revoked one on the same address is
+// still open keeps the window when the revoked one closes last.
+func TestRevokedReleaseAfterLiveKeepsWindow(t *testing.T) {
+	m := newIPLimitManager(t)
+	key := UserKey{Inbound: "in", User: "u"}
+	m.Set(UserLimit{Inbound: "in", User: "u", MaxIPs: 1})
+
+	live, err := m.AdmitFrom(key, addr("198.51.100.1"))
+	require.NoError(t, err)
+	stale, err := m.AdmitFrom(key, addr("198.51.100.1"))
+	require.NoError(t, err)
+	live.ReleaseFor(&testSession{})
+	stale.ReleaseFor(&testSession{revoked: true})
+	_, err = m.AdmitFrom(key, addr("198.51.100.2"))
+	require.ErrorIs(t, err, ErrUserMaxIPs, "the closed live connection lost its window")
+}
+
 // Snapshot, which QueryStats and the Xray counters poll, never touches the
 // address sets: it completes while the set of the user is locked. Only
 // SnapshotWithIPs (GET /traffic/users) reads them.

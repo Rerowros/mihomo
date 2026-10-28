@@ -148,10 +148,12 @@ func (s *userIPs) release(slot ipSlot, entry *ipEntry, now time.Time) {
 		return
 	}
 	entry.conns--
+	// A closed live connection starts the window even while others remain:
+	// a revoked one that closes last (discard) must not end the entry.
+	entry.left = now
 	if entry.conns > 0 {
 		return
 	}
-	entry.left = now
 	if entry.drop && s.entries[slot] == entry {
 		delete(s.entries, slot)
 	}
