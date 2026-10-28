@@ -2,10 +2,10 @@ package route
 
 import (
 	"errors"
+	"strings"
 
 	C "github.com/metacubex/mihomo/constant"
 	"github.com/metacubex/mihomo/listener"
-	"github.com/metacubex/mihomo/tunnel/statistic"
 
 	"github.com/metacubex/chi"
 	"github.com/metacubex/chi/render"
@@ -93,28 +93,14 @@ func putInboundUsers(w http.ResponseWriter, r *http.Request) {
 		render.JSON(w, r, newError(err.Error()))
 		return
 	}
-	var removed []string
-	err := listener.UpdateInboundUsers(name, func(users []C.InboundUser) ([]C.InboundUser, error) {
-		for _, old := range users {
-			kept := false
-			for _, next := range payload.Users {
-				if next.Username == old.Username {
-					kept = true
-					break
-				}
-			}
-			if !kept {
-				removed = append(removed, old.Username)
-			}
-		}
+	// Users missing from the payload or re-keyed in it are revoked by the
+	// listener, which closes their connections.
+	_, err := listener.UpdateInboundUsers(name, func([]C.InboundUser) ([]C.InboundUser, error) {
 		return payload.Users, nil
 	})
 	if err != nil {
 		writeInboundUserError(w, r, err)
 		return
-	}
-	for _, user := range removed {
-		statistic.DefaultManager.CloseByUser(name, user)
 	}
 	render.NoContent(w, r)
 }
@@ -127,9 +113,9 @@ func postInboundUser(w http.ResponseWriter, r *http.Request) {
 		render.JSON(w, r, newError(err.Error()))
 		return
 	}
-	err := listener.UpdateInboundUsers(name, func(users []C.InboundUser) ([]C.InboundUser, error) {
+	_, err := listener.UpdateInboundUsers(name, func(users []C.InboundUser) ([]C.InboundUser, error) {
 		for _, existing := range users {
-			if existing.Username == user.Username {
+			if strings.EqualFold(existing.Username, user.Username) {
 				return nil, C.ErrInboundUserExists
 			}
 		}
@@ -152,7 +138,7 @@ func patchInboundUser(w http.ResponseWriter, r *http.Request) {
 		render.JSON(w, r, newError(err.Error()))
 		return
 	}
-	err := listener.UpdateInboundUsers(name, func(users []C.InboundUser) ([]C.InboundUser, error) {
+	change, err := listener.UpdateInboundUsers(name, func(users []C.InboundUser) ([]C.InboundUser, error) {
 		found := false
 		for i := range users {
 			if users[i].Username != username {
@@ -184,16 +170,15 @@ func patchInboundUser(w http.ResponseWriter, r *http.Request) {
 		writeInboundUserError(w, r, err)
 		return
 	}
-	// A re-keyed user's existing sessions still carry the old credentials;
-	// close them so the change takes effect at once.
-	closed := statistic.DefaultManager.CloseByUser(name, username)
-	render.JSON(w, r, render.M{"closed": closed})
+	// A re-keyed or renamed user is revoked by the listener and its
+	// connections are closed; a PATCH that changes nothing closes nothing.
+	render.JSON(w, r, render.M{"closed": change.Closed})
 }
 
 func deleteInboundUser(w http.ResponseWriter, r *http.Request) {
 	name := getEscapeParam(r, "name")
 	username := getEscapeParam(r, "user")
-	err := listener.UpdateInboundUsers(name, func(users []C.InboundUser) ([]C.InboundUser, error) {
+	change, err := listener.UpdateInboundUsers(name, func(users []C.InboundUser) ([]C.InboundUser, error) {
 		kept := make([]C.InboundUser, 0, len(users))
 		found := false
 		for _, user := range users {
@@ -212,8 +197,7 @@ func deleteInboundUser(w http.ResponseWriter, r *http.Request) {
 		writeInboundUserError(w, r, err)
 		return
 	}
-	closed := statistic.DefaultManager.CloseByUser(name, username)
-	render.JSON(w, r, render.M{"closed": closed})
+	render.JSON(w, r, render.M{"closed": change.Closed})
 }
 
 func writeInboundUserError(w http.ResponseWriter, r *http.Request, err error) {

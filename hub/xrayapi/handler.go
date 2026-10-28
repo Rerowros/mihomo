@@ -6,7 +6,6 @@ import (
 
 	C "github.com/metacubex/mihomo/constant"
 	"github.com/metacubex/mihomo/listener"
-	"github.com/metacubex/mihomo/tunnel/statistic"
 
 	"google.golang.org/protobuf/encoding/protowire"
 )
@@ -37,17 +36,20 @@ func addUser(tag string, operation []byte) ([]byte, int, string) {
 	if user.Email == "" {
 		return nil, 3, "user email is empty"
 	}
+	if user.Account.Type != "xray.proxy.vless.Account" {
+		return nil, 3, "only VLESS accounts are supported, got " + user.Account.Type
+	}
 	account, err := accountUser(user.Account)
 	if err != nil {
 		return nil, 3, err.Error()
 	}
-	if account.Password != "" || account.UUID == "" {
-		return nil, 3, "only VLESS/VMess accounts are supported"
+	if account.UUID == "" {
+		return nil, 3, "user id is empty"
 	}
 
-	err = listener.UpdateInboundUsers(tag, func(users []C.InboundUser) ([]C.InboundUser, error) {
+	_, err = listener.UpdateInboundUsers(tag, func(users []C.InboundUser) ([]C.InboundUser, error) {
 		for i := range users {
-			if users[i].Username == user.Email {
+			if strings.EqualFold(users[i].Username, user.Email) {
 				return nil, C.ErrInboundUserExists
 			}
 		}
@@ -74,11 +76,12 @@ func removeUser(tag string, operation []byte) ([]byte, int, string) {
 	if email == "" {
 		return nil, 3, "user email is empty"
 	}
-	err = listener.UpdateInboundUsers(tag, func(users []C.InboundUser) ([]C.InboundUser, error) {
+	// The listener revokes the removed user and closes its connections.
+	_, err = listener.UpdateInboundUsers(tag, func(users []C.InboundUser) ([]C.InboundUser, error) {
 		kept := make([]C.InboundUser, 0, len(users))
 		found := false
 		for _, user := range users {
-			if user.Username == email {
+			if strings.EqualFold(user.Username, email) {
 				found = true
 				continue
 			}
@@ -92,7 +95,6 @@ func removeUser(tag string, operation []byte) ([]byte, int, string) {
 	if err != nil {
 		return nil, userErrorCode(err), "failed to get handler: " + err.Error()
 	}
-	statistic.DefaultManager.CloseByUser(tag, email)
 	return nil, 0, ""
 }
 
@@ -107,7 +109,7 @@ func getInboundUsers(message []byte) ([]byte, int, string) {
 	}
 	var response []byte
 	for _, user := range users {
-		if email != "" && user.Username != email {
+		if email != "" && !strings.EqualFold(user.Username, email) {
 			continue
 		}
 		response = appendMessage(response, 1, encodeUser(user.Username, user.UUID, user.Flow))

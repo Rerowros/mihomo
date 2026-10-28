@@ -58,9 +58,9 @@ func (m *Manager) Range(f func(c Tracker) bool) {
 	})
 }
 
-// CloseByUser closes every live connection of one inbound user and returns how
-// many it closed. Removing a user from the user table stops new handshakes;
-// this ends the sessions that were already established.
+// CloseByUser closes every tracked connection of one inbound user and returns
+// how many it closed. VLESS users do not need it: revoking a user closes the
+// client connections and trackers bound to its record (C.InboundSession).
 func (m *Manager) CloseByUser(inbound, user string) int {
 	var matched []Tracker
 	m.connections.Range(func(_ string, c Tracker) bool {

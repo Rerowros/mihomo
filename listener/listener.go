@@ -680,22 +680,23 @@ var inboundUsersUpdateMu sync.Mutex
 // UpdateInboundUsers reads the live user table, applies update and writes the
 // result back while holding the registry lock: the listener cannot be replaced
 // between the read and the write.
-func UpdateInboundUsers(name string, update func([]C.InboundUser) ([]C.InboundUser, error)) error {
+// The change reports the revoked users and the connections closed for them.
+func UpdateInboundUsers(name string, update func([]C.InboundUser) ([]C.InboundUser, error)) (C.InboundUserChange, error) {
 	inboundUsersUpdateMu.Lock()
 	defer inboundUsersUpdateMu.Unlock()
 	inboundMux.RLock()
 	defer inboundMux.RUnlock()
 	listener, ok := inboundListeners[name]
 	if !ok {
-		return C.ErrInboundNotFound
+		return C.InboundUserChange{}, C.ErrInboundNotFound
 	}
 	manager, ok := listener.(C.InboundUserManager)
 	if !ok {
-		return C.ErrInboundNoUserTable
+		return C.InboundUserChange{}, C.ErrInboundNoUserTable
 	}
 	users, err := update(manager.GetUsers())
 	if err != nil {
-		return err
+		return C.InboundUserChange{}, err
 	}
 	return manager.SetUsers(users)
 }
@@ -716,19 +717,20 @@ func GetInboundUsers(name string) ([]C.InboundUser, error) {
 }
 
 // SetInboundUsers replaces the runtime user table of an inbound. The listener
-// stays up: the new table is used by the next handshake.
-func SetInboundUsers(name string, users []C.InboundUser) error {
+// stays up: the new table is used by the next handshake, and removed or
+// re-keyed users lose their open connections.
+func SetInboundUsers(name string, users []C.InboundUser) (C.InboundUserChange, error) {
 	inboundUsersUpdateMu.Lock()
 	defer inboundUsersUpdateMu.Unlock()
 	inboundMux.RLock()
 	defer inboundMux.RUnlock()
 	listener, ok := inboundListeners[name]
 	if !ok {
-		return C.ErrInboundNotFound
+		return C.InboundUserChange{}, C.ErrInboundNotFound
 	}
 	manager, ok := listener.(C.InboundUserManager)
 	if !ok {
-		return C.ErrInboundNoUserTable
+		return C.InboundUserChange{}, C.ErrInboundNoUserTable
 	}
 	return manager.SetUsers(users)
 }

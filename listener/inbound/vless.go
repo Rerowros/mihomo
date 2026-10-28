@@ -1,15 +1,15 @@
 package inbound
 
 import (
+	"fmt"
 	"strings"
 
+	"github.com/metacubex/mihomo/common/utils"
 	C "github.com/metacubex/mihomo/constant"
 	LC "github.com/metacubex/mihomo/listener/config"
 	"github.com/metacubex/mihomo/listener/sing_vless"
 	"github.com/metacubex/mihomo/log"
 	"github.com/metacubex/mihomo/transport/vless"
-
-	"github.com/gofrs/uuid/v5"
 )
 
 type VlessOption struct {
@@ -113,6 +113,9 @@ func NewVless(options *VlessOption) (*Vless, error) {
 			Flow:     v.Flow,
 		}
 	}
+	if err := checkVlessUsers(users); err != nil {
+		return nil, err
+	}
 	return &Vless{
 		Base:   base,
 		config: options,
@@ -187,39 +190,53 @@ func (v *Vless) GetUsers() []C.InboundUser {
 }
 
 // SetUsers implements constant.InboundUserManager: the new table takes effect
-// for the next handshake without restarting the listener.
-func (v *Vless) SetUsers(users []C.InboundUser) error {
+// for the next handshake without restarting the listener; removed or re-keyed
+// users are revoked and their connections closed.
+func (v *Vless) SetUsers(users []C.InboundUser) (C.InboundUserChange, error) {
 	if v.svc == nil {
-		return C.ErrInboundNotFound
+		return C.InboundUserChange{}, C.ErrInboundNotFound
 	}
 	converted := make([]LC.VlessUser, 0, len(users))
-	seenNames := make(map[string]struct{}, len(users))
-	seenUUIDs := make(map[string]struct{}, len(users))
 	for _, user := range users {
 		if user.Username == "" || user.UUID == "" {
-			return C.ErrInvalidInboundUser
-		}
-		if _, err := uuid.FromString(user.UUID); err != nil {
-			return C.ErrInvalidInboundUser
+			return C.InboundUserChange{}, C.ErrInvalidInboundUser
 		}
 		if user.Flow != "" && user.Flow != vless.XRV {
-			return C.ErrInvalidInboundUser
+			return C.InboundUserChange{}, C.ErrInvalidInboundUser
 		}
-		if _, ok := seenNames[user.Username]; ok {
-			return C.ErrInvalidInboundUser
-		}
-		if _, ok := seenUUIDs[user.UUID]; ok {
-			return C.ErrInvalidInboundUser
-		}
-		seenNames[user.Username] = struct{}{}
-		seenUUIDs[user.UUID] = struct{}{}
 		converted = append(converted, LC.VlessUser{
 			Username: user.Username,
 			UUID:     user.UUID,
 			Flow:     user.Flow,
 		})
 	}
-	v.svc.UpdateUsers(converted)
+	if err := checkVlessUsers(converted); err != nil {
+		return C.InboundUserChange{}, err
+	}
+	return v.svc.UpdateUsers(converted), nil
+}
+
+// checkVlessUsers rejects users that would collide in the table: names that
+// differ only in case (a panel addresses users by email without case), and ids
+// that map to one key. The key is utils.UUIDMap, as in the handshake, so a
+// UUID in another case or a string id equal to another user's is caught.
+func checkVlessUsers(users []LC.VlessUser) error {
+	names := make(map[string]struct{}, len(users))
+	keys := make(map[[16]byte]string, len(users))
+	for _, user := range users {
+		if user.Username != "" {
+			name := strings.ToLower(user.Username)
+			if _, ok := names[name]; ok {
+				return fmt.Errorf("%w: duplicate user name %q", C.ErrInvalidInboundUser, user.Username)
+			}
+			names[name] = struct{}{}
+		}
+		key := utils.UUIDMap(user.UUID)
+		if other, ok := keys[key]; ok {
+			return fmt.Errorf("%w: users %q and %q have the same id", C.ErrInvalidInboundUser, other, user.Username)
+		}
+		keys[key] = user.Username
+	}
 	return nil
 }
 

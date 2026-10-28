@@ -96,6 +96,13 @@ type limitState struct {
 	down  *rateLimiter
 }
 
+// release lifts the rate limits of a state that left the table: relays
+// sleeping on it wake up and go on without a limit.
+func (s *limitState) release() {
+	s.up.setRate(0)
+	s.down.setRate(0)
+}
+
 func (s *limitState) expired(now time.Time) bool {
 	return s.limit.ExpireAt > 0 && now.Unix() >= s.limit.ExpireAt
 }
@@ -203,6 +210,11 @@ func (m *LimitManager) Replace(limits []UserLimit) {
 		table[key] = newLimitState(limit)
 	}
 	m.table.Store(&table)
+	for key, state := range *old {
+		if table[key] != state {
+			state.release()
+		}
+	}
 }
 
 // Add or update one policy, keeping its usage.
@@ -229,7 +241,8 @@ func (m *LimitManager) Delete(inbound, user string) bool {
 	defer m.mu.Unlock()
 	key := UserKey{Inbound: inbound, User: user}
 	old := m.table.Load()
-	if _, ok := (*old)[key]; !ok {
+	state, ok := (*old)[key]
+	if !ok {
 		return false
 	}
 	table := make(map[UserKey]*limitState, len(*old))
@@ -239,46 +252,56 @@ func (m *LimitManager) Delete(inbound, user string) bool {
 		}
 	}
 	m.table.Store(&table)
+	state.release()
 	return true
 }
 
-// Admit checks whether a new connection of the user may start.
-func (m *LimitManager) Admit(key UserKey) error {
+// Admission is the connection slot of one user, taken by Admit. Release
+// returns it to the policy state it was taken from, so a policy deleted and set
+// again does not count the old connections. A nil Admission is valid: the user
+// has no policy.
+type Admission struct {
+	state *limitState
+	once  sync.Once
+}
+
+// Release frees the slot; calls after the first are no-ops.
+func (a *Admission) Release() {
+	if a == nil {
+		return
+	}
+	a.once.Do(func() {
+		a.state.mu.Lock()
+		if a.state.conns > 0 {
+			a.state.conns--
+		}
+		a.state.mu.Unlock()
+	})
+}
+
+// Admit checks whether a new connection of the user may start and, if so,
+// takes a slot under the same lock, so parallel connections cannot all pass a
+// max-conns check. The slot is taken for every policy (not only max-conns), so
+// /limits shows the live count and a max-conns added later sees the existing
+// connections.
+func (m *LimitManager) Admit(key UserKey) (*Admission, error) {
 	state := m.lookup(key)
 	if state == nil {
-		return nil
+		return nil, nil
 	}
 	state.mu.Lock()
 	defer state.mu.Unlock()
 	if state.expired(time.Now()) {
-		return ErrUserLimitExpired
+		return nil, ErrUserLimitExpired
 	}
 	if state.limit.Quota > 0 && state.used >= state.limit.Quota {
-		return ErrUserQuotaExceeded
+		return nil, ErrUserQuotaExceeded
 	}
 	if state.limit.MaxConns > 0 && state.conns >= state.limit.MaxConns {
-		return ErrUserMaxConns
+		return nil, ErrUserMaxConns
 	}
-	return nil
-}
-
-// Connect and Disconnect keep the live connection count of the user.
-func (m *LimitManager) Connect(key UserKey) {
-	if state := m.lookup(key); state != nil {
-		state.mu.Lock()
-		state.conns++
-		state.mu.Unlock()
-	}
-}
-
-func (m *LimitManager) Disconnect(key UserKey) {
-	if state := m.lookup(key); state != nil {
-		state.mu.Lock()
-		if state.conns > 0 {
-			state.conns--
-		}
-		state.mu.Unlock()
-	}
+	state.conns++
+	return &Admission{state: state}, nil
 }
 
 // AddUsage counts payload bytes against the quota and reports whether the

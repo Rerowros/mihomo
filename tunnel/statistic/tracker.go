@@ -47,6 +47,8 @@ type tcpTracker struct {
 	userStats     bool
 	userCloseOnce sync.Once
 	quotaExceeded stdatomic.Bool
+	admission     *Admission
+	release       stdatomic.Pointer[func()]
 }
 
 // bindUser remembers the inbound and the authenticated user for the counters.
@@ -220,7 +222,10 @@ func (tt *tcpTracker) Close() error {
 	tt.userCloseOnce.Do(func() {
 		if tt.userStats {
 			DefaultUserManager.Close(tt.user)
-			DefaultLimitManager.Disconnect(tt.user)
+		}
+		tt.admission.Release()
+		if release := tt.release.Load(); release != nil {
+			(*release)()
 		}
 	})
 	return tt.Conn.Close()
@@ -231,6 +236,15 @@ func (tt *tcpTracker) Upstream() any {
 }
 
 func NewTCPTracker(conn C.Conn, manager *Manager, metadata *C.Metadata, rule C.Rule, uploadTotal int64, downloadTotal int64, pushToManager bool) *tcpTracker {
+	t, _ := NewTCPTrackerAdmitted(conn, manager, metadata, rule, uploadTotal, downloadTotal, pushToManager, nil)
+	return t
+}
+
+// NewTCPTrackerAdmitted is NewTCPTracker that owns the user's connection slot
+// (released on Close) and binds itself to the user's inbound session. If the
+// session was revoked meanwhile, the tracker is closed and
+// C.ErrInboundUserRevoked is returned.
+func NewTCPTrackerAdmitted(conn C.Conn, manager *Manager, metadata *C.Metadata, rule C.Rule, uploadTotal int64, downloadTotal int64, pushToManager bool, admission *Admission) (*tcpTracker, error) {
 	metadata.RemoteDst = conn.RemoteDestination()
 
 	t := &tcpTracker{
@@ -247,6 +261,7 @@ func NewTCPTracker(conn C.Conn, manager *Manager, metadata *C.Metadata, rule C.R
 			DownloadTotal: atomic.NewInt64(downloadTotal),
 		},
 		pushToManager: pushToManager,
+		admission:     admission,
 	}
 
 	if pushToManager {
@@ -275,12 +290,14 @@ func NewTCPTracker(conn C.Conn, manager *Manager, metadata *C.Metadata, rule C.R
 			t.pushUserUploaded(uploadTotal)
 			t.pushUserDownloaded(downloadTotal)
 			DefaultUserManager.Open(t.user)
-			DefaultLimitManager.Connect(t.user)
 		}
 	}
 
 	manager.Join(t)
-	return t
+	if err := bindSession(t, &t.release, metadata, pushToManager); err != nil {
+		return t, err
+	}
+	return t, nil
 }
 
 type udpTracker struct {
@@ -295,6 +312,8 @@ type udpTracker struct {
 	userStats     bool
 	userCloseOnce sync.Once
 	quotaExceeded stdatomic.Bool
+	admission     *Admission
+	release       stdatomic.Pointer[func()]
 }
 
 func (ut *udpTracker) bindUser(metadata *C.Metadata) {
@@ -424,7 +443,10 @@ func (ut *udpTracker) Close() error {
 	ut.userCloseOnce.Do(func() {
 		if ut.userStats {
 			DefaultUserManager.Close(ut.user)
-			DefaultLimitManager.Disconnect(ut.user)
+		}
+		ut.admission.Release()
+		if release := ut.release.Load(); release != nil {
+			(*release)()
 		}
 	})
 	return ut.PacketConn.Close()
@@ -435,6 +457,12 @@ func (ut *udpTracker) Upstream() any {
 }
 
 func NewUDPTracker(conn C.PacketConn, manager *Manager, metadata *C.Metadata, rule C.Rule, uploadTotal int64, downloadTotal int64, pushToManager bool) *udpTracker {
+	ut, _ := NewUDPTrackerAdmitted(conn, manager, metadata, rule, uploadTotal, downloadTotal, pushToManager, nil)
+	return ut
+}
+
+// NewUDPTrackerAdmitted is the UDP counterpart of NewTCPTrackerAdmitted.
+func NewUDPTrackerAdmitted(conn C.PacketConn, manager *Manager, metadata *C.Metadata, rule C.Rule, uploadTotal int64, downloadTotal int64, pushToManager bool, admission *Admission) (*udpTracker, error) {
 	metadata.RemoteDst = conn.RemoteDestination()
 
 	ut := &udpTracker{
@@ -451,6 +479,7 @@ func NewUDPTracker(conn C.PacketConn, manager *Manager, metadata *C.Metadata, ru
 			DownloadTotal: atomic.NewInt64(downloadTotal),
 		},
 		pushToManager: pushToManager,
+		admission:     admission,
 	}
 
 	if pushToManager {
@@ -477,10 +506,29 @@ func NewUDPTracker(conn C.PacketConn, manager *Manager, metadata *C.Metadata, ru
 			ut.pushUserUploaded(uploadTotal)
 			ut.pushUserDownloaded(downloadTotal)
 			DefaultUserManager.Open(ut.user)
-			DefaultLimitManager.Connect(ut.user)
 		}
 	}
 
 	manager.Join(ut)
-	return ut
+	if err := bindSession(ut, &ut.release, metadata, pushToManager); err != nil {
+		return ut, err
+	}
+	return ut, nil
+}
+
+// bindSession ties a tracker to the inbound session of its user, after it has
+// joined the manager: a revocation either finds it in the session and closes
+// it, or has already happened and the tracker closes itself here. DNS and
+// dialer-proxy trackers (pushToManager false) are not sessions of the user.
+func bindSession(t Tracker, release *stdatomic.Pointer[func()], metadata *C.Metadata, pushToManager bool) error {
+	if !pushToManager || metadata.InSession == nil {
+		return nil
+	}
+	unbind, ok := metadata.InSession.Bind(t, true)
+	if !ok {
+		_ = t.Close()
+		return C.ErrInboundUserRevoked
+	}
+	release.Store(&unbind)
+	return nil
 }

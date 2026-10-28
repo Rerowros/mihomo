@@ -6,6 +6,7 @@ import (
 	"net"
 
 	"github.com/metacubex/mihomo/adapter/inbound"
+	C "github.com/metacubex/mihomo/constant"
 
 	"github.com/metacubex/sing/common/auth"
 )
@@ -29,8 +30,30 @@ func getAdditions(ctx context.Context) (additions []inbound.Addition) {
 	if user, ok := auth.UserFromContext[string](ctx); ok {
 		additions = slices.Clip(additions) // force the subsequent `append()` to copy the slice
 		additions = append(additions, inbound.WithInUser(user))
+		// Only an authenticated user can have a session; listeners without
+		// users skip this lookup.
+		if session := inboundSession(ctx); session != nil {
+			additions = append(additions, inbound.WithInSession(session))
+		}
 	}
 	return
+}
+
+var ctxKeyInboundSession = contextKey("InboundSession")
+
+// WithInboundSession attaches the record of the authenticated user. Every
+// stream opened on the connection (mux, XUDP) inherits it with the context.
+func WithInboundSession(ctx context.Context, session C.InboundSession) context.Context {
+	return context.WithValue(ctx, ctxKeyInboundSession, session)
+}
+
+func inboundSession(ctx context.Context) C.InboundSession {
+	if v := ctx.Value(ctxKeyInboundSession); v != nil {
+		if session, ok := v.(C.InboundSession); ok {
+			return session
+		}
+	}
+	return nil
 }
 
 var ctxKeyInAddr = contextKey("InAddr")
