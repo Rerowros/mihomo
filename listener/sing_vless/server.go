@@ -13,6 +13,7 @@ import (
 	C "github.com/metacubex/mihomo/constant"
 	LC "github.com/metacubex/mihomo/listener/config"
 	"github.com/metacubex/mihomo/listener/jls"
+	"github.com/metacubex/mihomo/listener/preauth"
 	"github.com/metacubex/mihomo/listener/reality"
 	"github.com/metacubex/mihomo/listener/restls"
 	"github.com/metacubex/mihomo/listener/shadowtls"
@@ -84,7 +85,11 @@ func New(config LC.VlessServer, lc C.InboundListenConfig, tunnel C.Tunnel, addit
 
 	httpServer := http.Server{
 		IdleTimeout: 30 * time.Second,
-		Protocols:   new(http.Protocols),
+		// bounds the TLS handshake and each HTTP/1 request header; the time
+		// to the first request (h2c preface, h2 conn with no stream) is
+		// bounded by preauth.GuardFirstRequest below
+		ReadHeaderTimeout: handshakeTimeout,
+		Protocols:         new(http.Protocols),
 	}
 	tlsConfig := &tls.Config{Time: ntp.Now}
 	var shadowTLSBuilder *shadowtls.Builder
@@ -254,6 +259,9 @@ func New(config LC.VlessServer, lc C.InboundListenConfig, tunnel C.Tunnel, addit
 			tlsConfig.NextProtos = append([]string{"h2"}, tlsConfig.NextProtos...)
 		}
 	}
+	if httpServer.Handler != nil {
+		preauth.GuardFirstRequest(&httpServer, handshakeTimeout)
+	}
 	for _, addr := range strings.Split(config.Listen, ",") {
 		addr := addr
 
@@ -327,6 +335,9 @@ func (l *Listener) AddrList() (addrList []net.Addr) {
 
 func (l *Listener) HandleConn(conn net.Conn, tunnel C.Tunnel, additions ...inbound.Addition) {
 	ctx := sing.WithAdditions(context.TODO(), additions...)
+	// cleared by NewConnection once the request header is read and the user
+	// is authenticated
+	setHandshakeDeadline(conn)
 	if l.decryption != nil {
 		c, err := l.decryption.Handshake(conn, nil)
 		if err != nil {

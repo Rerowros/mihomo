@@ -117,6 +117,9 @@ func (s *Service[T]) NewConnection(ctx context.Context, conn net.Conn, metadata 
 	if requestFlow != userFlow && requestFlow != "" {
 		return E.New("flow mismatch: expected ", flowName(userFlow), ", but got ", flowName(requestFlow))
 	}
+	// the header is read and the user is authenticated: lift the handshake
+	// deadline set by the listener, the session may idle from here on
+	clearHandshakeDeadline(conn)
 
 	responseConn := &serverConn{ExtendedConn: bufio.NewExtendedConn(conn)}
 	switch requestFlow {

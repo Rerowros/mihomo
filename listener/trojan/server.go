@@ -6,6 +6,7 @@ import (
 	"io"
 	"net"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/metacubex/mihomo/adapter/inbound"
@@ -16,6 +17,7 @@ import (
 	C "github.com/metacubex/mihomo/constant"
 	LC "github.com/metacubex/mihomo/listener/config"
 	"github.com/metacubex/mihomo/listener/jls"
+	"github.com/metacubex/mihomo/listener/preauth"
 	"github.com/metacubex/mihomo/listener/reality"
 	"github.com/metacubex/mihomo/listener/restls"
 	"github.com/metacubex/mihomo/listener/shadowtls"
@@ -80,7 +82,11 @@ func New(config LC.TrojanServer, lc C.InboundListenConfig, tunnel C.Tunnel, addi
 
 	httpServer := http.Server{
 		IdleTimeout: 30 * time.Second,
-		Protocols:   new(http.Protocols),
+		// bounds the TLS handshake and each HTTP/1 request header; the time
+		// to the first request (h2c preface, h2 conn with no stream) is
+		// bounded by preauth.GuardFirstRequest below
+		ReadHeaderTimeout: handshakeTimeout,
+		Protocols:         new(http.Protocols),
 	}
 	tlsConfig := &tls.Config{Time: ntp.Now}
 	var shadowTLSBuilder *shadowtls.Builder
@@ -194,6 +200,9 @@ func New(config LC.TrojanServer, lc C.InboundListenConfig, tunnel C.Tunnel, addi
 		tlsConfig.NextProtos = append([]string{"h2"}, tlsConfig.NextProtos...) // h2 must before http/1.1
 	}
 
+	if httpServer.Handler != nil {
+		preauth.GuardFirstRequest(&httpServer, handshakeTimeout)
+	}
 	for _, addr := range strings.Split(config.Listen, ",") {
 		addr := addr
 
@@ -265,6 +274,8 @@ func (l *Listener) AddrList() (addrList []net.Addr) {
 func (l *Listener) HandleConn(conn net.Conn, tunnel C.Tunnel, additions ...inbound.Addition) {
 	defer conn.Close()
 
+	// cleared by handleConn once the request header is read
+	setHandshakeDeadline(conn)
 	if l.pickCipher != nil {
 		conn = l.pickCipher.StreamConn(conn)
 	}
@@ -294,6 +305,9 @@ func (l *Listener) HandleConn(conn net.Conn, tunnel C.Tunnel, additions ...inbou
 func (l *Listener) handleConn(inMux bool, conn net.Conn, tunnel C.Tunnel, additions ...inbound.Addition) {
 	if inMux {
 		defer conn.Close()
+		// a mux stream must send its command and target in time too; the
+		// outer conn's deadline was lifted when the session started
+		setHandshakeDeadline(conn)
 	}
 
 	command, err := socks5.ReadByte(conn)
@@ -322,6 +336,9 @@ func (l *Listener) handleConn(inMux bool, conn net.Conn, tunnel C.Tunnel, additi
 			return
 		}
 	}
+	// the header is read: lift the handshake deadline set by HandleConn, or
+	// above for a mux stream
+	clearHandshakeDeadline(conn)
 
 	switch command {
 	case trojan.CommandTCP:
@@ -364,12 +381,23 @@ func (l *Listener) handleConn(inMux bool, conn net.Conn, tunnel C.Tunnel, additi
 			return
 		}
 		defer session.Close()
+		var streams atomic.Int32
 		for {
 			stream, err := session.AcceptStream()
 			if err != nil {
 				return
 			}
-			go l.handleConn(true, stream, tunnel, additions...)
+			if streams.Load() >= int32(maxMuxStreams) {
+				// too many open streams: refuse this one (the client sees it
+				// closed) rather than stall the session or spawn more
+				_ = stream.Close()
+				continue
+			}
+			streams.Add(1)
+			go func() {
+				defer streams.Add(-1)
+				l.handleConn(true, stream, tunnel, additions...)
+			}()
 		}
 	}
 }

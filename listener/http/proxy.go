@@ -12,6 +12,7 @@ import (
 	N "github.com/metacubex/mihomo/common/net"
 	"github.com/metacubex/mihomo/component/auth"
 	C "github.com/metacubex/mihomo/constant"
+	authStore "github.com/metacubex/mihomo/listener/auth"
 	"github.com/metacubex/mihomo/log"
 
 	"github.com/metacubex/http"
@@ -48,7 +49,11 @@ func HandleConn(c net.Conn, tunnel C.Tunnel, store auth.AuthStore, additions ...
 
 	for {
 		peekMutex.Lock()
+		// a request header must arrive in time; the deadline is lifted before
+		// the body, a CONNECT tunnel or an upgraded connection is relayed
+		authStore.SetHandshakeDeadline(c)
 		request, err := ReadRequest(conn.Reader())
+		authStore.ClearHandshakeDeadline(c)
 		peekMutex.Unlock()
 		if err != nil {
 			break

@@ -72,11 +72,11 @@ func New(config LC.ShadowsocksServer, lc C.InboundListenConfig, tunnel C.Tunnel,
 
 	switch {
 	case config.Cipher == shadowsocks.MethodNone:
-		sl.service = shadowsocks.NewNoneService(udpTimeout, h)
+		sl.service = shadowsocks.NewNoneService(udpTimeout, handshakeDone{h})
 	case common.Contains(shadowaead.List, config.Cipher):
-		sl.service, err = shadowaead.NewService(config.Cipher, nil, config.Password, udpTimeout, h)
+		sl.service, err = shadowaead.NewService(config.Cipher, nil, config.Password, udpTimeout, handshakeDone{h})
 	case common.Contains(shadowaead_2022.List, config.Cipher):
-		sl.service, err = shadowaead_2022.NewServiceWithPassword(config.Cipher, config.Password, udpTimeout, h, ntp.Now)
+		sl.service, err = shadowaead_2022.NewServiceWithPassword(config.Cipher, config.Password, udpTimeout, handshakeDone{h}, ntp.Now)
 	default:
 		err = fmt.Errorf("shadowsocks: unsupported method: %s", config.Cipher)
 		return embedSS.New(config, lc, tunnel, additions...)
@@ -270,10 +270,13 @@ func (l *Listener) HandleConn(conn net.Conn, tunnel C.Tunnel, additions ...inbou
 	if jlsUser, jlsLoaded := jls.UserFromConn(conn); jlsLoaded {
 		user, loaded = jlsUser, true
 	}
+	// The service reads the salt, authenticates and reads the target before
+	// it hands the conn to the handler; until then the client is cut at the
+	// handshake deadline. handshakeDone lifts it.
+	ctx := withHandshakeConn(sing.WithAdditions(context.TODO(), additions...), conn)
 	if l.simpleObfs != nil {
 		conn = l.simpleObfs(conn)
 	}
-	ctx := sing.WithAdditions(context.TODO(), additions...)
 	if loaded {
 		ctx = auth.ContextWithUser(ctx, user)
 	}
