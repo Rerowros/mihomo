@@ -5,6 +5,8 @@ import (
 	"net"
 	"sync/atomic"
 	"time"
+
+	"github.com/metacubex/sing/common/logger"
 )
 
 // Limits of one sing-mux (smux, yamux, h2mux) session on the server.
@@ -51,6 +53,36 @@ func (s *muxStream) expire() {
 		_ = s.conn.Close()
 		s.release()
 	}
+}
+
+// abort closes a stream that ended before reaching the handler and frees its
+// slot at once instead of when the handshake timer fires.
+func (s *muxStream) abort() {
+	if s.started.CompareAndSwap(false, true) {
+		s.timer.Stop()
+		_ = s.conn.Close()
+		s.release()
+	}
+}
+
+// muxLogger is the sing-mux logger. sing-mux logs an error with the stream
+// context exactly when a stream ends before reaching the handler: its request
+// could not be read (the client closed the stream or sent garbage) or its
+// brutal exchange failed. sing-mux leaves such a stream open, so it is closed
+// here and its slot freed; otherwise a client that opens and closes streams
+// would fill the session for muxHandshakeTimeout.
+//
+// A brutal exchange that succeeds returns without a log and keeps its slot
+// until the timer fires; a client sends one per session.
+type muxLogger struct {
+	logger.ContextLogger
+}
+
+func (l muxLogger) ErrorContext(ctx context.Context, args ...any) {
+	if s, _ := ctx.Value(muxStreamKey{}).(*muxStream); s != nil {
+		s.abort()
+	}
+	l.ContextLogger.ErrorContext(ctx, args...)
 }
 
 // withMuxSession marks ctx as the context of a new sing-mux session.

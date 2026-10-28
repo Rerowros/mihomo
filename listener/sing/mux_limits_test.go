@@ -130,3 +130,19 @@ func TestSingMuxStreamCap(t *testing.T) {
 		}
 	}
 }
+
+// A stream closed before its request frees its slot at once: a client that
+// opens and closes more than muxMaxStreams streams can still open a new one
+// without waiting for muxHandshakeTimeout.
+func TestSingMuxClosedStreamFreesSlot(t *testing.T) {
+	setMuxLimits(t, 1024, time.Minute)
+	session := openSingMux(t)
+	for i := 0; i < 1100; i++ {
+		_ = openStream(t, session).Close()
+	}
+	time.Sleep(300 * time.Millisecond) // the server reads EOF on each of them
+	stream := openStream(t, session)
+	if streamClosedWithin(stream, 300*time.Millisecond) {
+		t.Fatal("a new stream was refused: closed streams still hold their slots")
+	}
+}

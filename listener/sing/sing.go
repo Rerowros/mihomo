@@ -77,7 +77,7 @@ func NewListenerHandler(lc ListenerConfig) (h *ListenerHandler, err error) {
 	h.handlerId = utils.NewUUIDV4()
 	h.muxService, err = mux.NewService(mux.ServiceOptions{
 		NewStreamContext: newMuxStreamContext,
-		Logger:           log.SingInfoToDebugLogger, // convert sing-mux info log to debug
+		Logger:           muxLogger{log.SingInfoToDebugLogger}, // convert sing-mux info log to debug
 		Handler:          h,
 		Padding:          lc.MuxOption.Padding,
 		Brutal: mux.BrutalOptions{
