@@ -121,6 +121,65 @@ func TestParseProxyRejectsInvalidMuxCoolConfigurations(t *testing.T) {
 	}
 }
 
+func vlessMapping(extra map[string]any) map[string]any {
+	mapping := map[string]any{
+		"name": "vless", "type": "vless", "server": "127.0.0.1", "port": 443,
+		"uuid": "b831381d-6324-4d53-ad4f-8cda48b30811", "tls": true,
+	}
+	for k, v := range extra {
+		mapping[k] = v
+	}
+	return mapping
+}
+
+func TestParseProxyRejectsMuxCoolWithVLESSVision(t *testing.T) {
+	for _, flow := range []string{"xtls-rprx-vision", "xtls-rprx-vision-udp443"} {
+		t.Run(flow, func(t *testing.T) {
+			parsed, err := ParseProxy(vlessMapping(map[string]any{
+				"flow":     flow,
+				"mux.cool": map[string]any{"enabled": true},
+			}))
+			if parsed != nil {
+				_ = parsed.Close()
+			}
+			if err == nil || !strings.Contains(err.Error(), "mux.cool cannot be used with VLESS flow") {
+				t.Fatalf("error = %v, want mux.cool/flow conflict", err)
+			}
+		})
+	}
+}
+
+func TestParseProxyVLESSMuxCoolWrapping(t *testing.T) {
+	tests := []struct {
+		name        string
+		extra       map[string]any
+		wantWrapped bool
+	}{
+		{name: "no key", extra: nil},
+		{name: "vision without mux.cool", extra: map[string]any{"flow": "xtls-rprx-vision"}},
+		{name: "vision with disabled mux.cool", extra: map[string]any{"flow": "xtls-rprx-vision", "mux.cool": map[string]any{"enabled": false}}},
+		{name: "mux.cool without flow", extra: map[string]any{"mux.cool": map[string]any{"enabled": true}}, wantWrapped: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			parsed, err := ParseProxy(vlessMapping(tt.extra))
+			if err != nil {
+				t.Fatalf("ParseProxy: %v", err)
+			}
+			defer parsed.Close()
+			wrapped := unwrapAutoClose(t, parsed.Adapter())
+			if _, ok := wrapped.(*outbound.MuxCool); ok != tt.wantWrapped {
+				t.Fatalf("MuxCool wrapper present = %t, want %t (%T)", ok, tt.wantWrapped, wrapped)
+			}
+			if !tt.wantWrapped {
+				if _, ok := wrapped.(*outbound.Vless); !ok {
+					t.Fatalf("adapter = %T, want *outbound.Vless", wrapped)
+				}
+			}
+		})
+	}
+}
+
 func unwrapAutoClose(t *testing.T, adapter any) any {
 	t.Helper()
 	value := reflect.ValueOf(adapter)

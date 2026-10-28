@@ -2,10 +2,12 @@ package adapter
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/metacubex/mihomo/adapter/outbound"
 	"github.com/metacubex/mihomo/common/structure"
 	C "github.com/metacubex/mihomo/constant"
+	"github.com/metacubex/mihomo/transport/vless"
 )
 
 func ParseProxy(mapping map[string]any, options ...ProxyOption) (C.Proxy, error) {
@@ -248,6 +250,15 @@ func ParseProxy(mapping map[string]any, options ...ProxyOption) (C.Proxy, error)
 	}
 	if muxOption.Enabled && muxCoolOption.Enabled {
 		return nil, fmt.Errorf("smux and mux.cool cannot be enabled together")
+	}
+	if muxCoolOption.Enabled && proxyType == "vless" {
+		// Vision splices the inner TLS of a single TCP connection, while a
+		// mux.cool carrier holds many sessions; a Vision server breaks mux
+		// connections that contain TCP sessions.
+		if flow, _ := mapping["flow"].(string); strings.HasPrefix(flow, vless.XRV) {
+			_ = proxy.Close()
+			return nil, fmt.Errorf("mux.cool cannot be used with VLESS flow %s: disable mux.cool or remove flow", flow)
+		}
 	}
 	if muxOption.Enabled {
 		proxy, err = outbound.NewSingMux(*muxOption, proxy)
