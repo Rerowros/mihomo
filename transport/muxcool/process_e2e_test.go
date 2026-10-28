@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -405,17 +406,29 @@ func buildMihomoProcessE2E(t *testing.T) string {
 	return binary
 }
 
+// reserveProcessE2EPort returns a port free for both TCP and UDP: mixed and
+// socks inbounds listen on both.
 func reserveProcessE2EPort(t *testing.T) int {
 	t.Helper()
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
+	for attempt := 0; attempt < 32; attempt++ {
+		listener, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		port := listener.Addr().(*net.TCPAddr).Port
+		packetConn, udpErr := net.ListenPacket("udp", net.JoinHostPort("127.0.0.1", strconv.Itoa(port)))
+		if udpErr == nil {
+			_ = packetConn.Close()
+		}
+		if err := listener.Close(); err != nil {
+			t.Fatal(err)
+		}
+		if udpErr == nil {
+			return port
+		}
 	}
-	port := listener.Addr().(*net.TCPAddr).Port
-	if err := listener.Close(); err != nil {
-		t.Fatal(err)
-	}
-	return port
+	t.Fatal("no port free for both TCP and UDP")
+	return 0
 }
 
 func writeProcessE2EFile(t *testing.T, path, content string) {
