@@ -13,6 +13,7 @@ import (
 	C "github.com/metacubex/mihomo/constant"
 	LC "github.com/metacubex/mihomo/listener/config"
 	"github.com/metacubex/mihomo/listener/jls"
+	"github.com/metacubex/mihomo/listener/preauth"
 	"github.com/metacubex/mihomo/listener/reality"
 	"github.com/metacubex/mihomo/listener/restls"
 	"github.com/metacubex/mihomo/listener/shadowtls"
@@ -84,8 +85,9 @@ func New(config LC.VlessServer, lc C.InboundListenConfig, tunnel C.Tunnel, addit
 
 	httpServer := http.Server{
 		IdleTimeout: 30 * time.Second,
-		// bounds the TLS handshake and the request header of ws/grpc/xhttp
-		// before the conn reaches HandleConn and its own handshake deadline
+		// bounds the TLS handshake and each HTTP/1 request header; the time
+		// to the first request (h2c preface, h2 conn with no stream) is
+		// bounded by preauth.GuardFirstRequest below
 		ReadHeaderTimeout: handshakeTimeout,
 		Protocols:         new(http.Protocols),
 	}
@@ -256,6 +258,9 @@ func New(config LC.VlessServer, lc C.InboundListenConfig, tunnel C.Tunnel, addit
 		if !slices.Contains(tlsConfig.NextProtos, "h2") {
 			tlsConfig.NextProtos = append([]string{"h2"}, tlsConfig.NextProtos...)
 		}
+	}
+	if httpServer.Handler != nil {
+		preauth.GuardFirstRequest(&httpServer, handshakeTimeout)
 	}
 	for _, addr := range strings.Split(config.Listen, ",") {
 		addr := addr
