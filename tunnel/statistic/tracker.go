@@ -49,6 +49,7 @@ type tcpTracker struct {
 	quotaExceeded stdatomic.Bool
 	admission     *Admission
 	release       stdatomic.Pointer[func()]
+	closed        stdatomic.Bool
 }
 
 // bindUser remembers the inbound and the authenticated user for the counters.
@@ -224,6 +225,8 @@ func (tt *tcpTracker) Close() error {
 			DefaultUserManager.Close(tt.user)
 		}
 		tt.admission.Release()
+		// Seen by bindSession if Close wins the race with release.Store.
+		tt.closed.Store(true)
 		if release := tt.release.Load(); release != nil {
 			(*release)()
 		}
@@ -294,7 +297,7 @@ func NewTCPTrackerAdmitted(conn C.Conn, manager *Manager, metadata *C.Metadata, 
 	}
 
 	manager.Join(t)
-	if err := bindSession(t, &t.release, metadata, pushToManager); err != nil {
+	if err := bindSession(t, &t.release, &t.closed, metadata, pushToManager); err != nil {
 		return t, err
 	}
 	return t, nil
@@ -314,6 +317,7 @@ type udpTracker struct {
 	quotaExceeded stdatomic.Bool
 	admission     *Admission
 	release       stdatomic.Pointer[func()]
+	closed        stdatomic.Bool
 }
 
 func (ut *udpTracker) bindUser(metadata *C.Metadata) {
@@ -445,6 +449,8 @@ func (ut *udpTracker) Close() error {
 			DefaultUserManager.Close(ut.user)
 		}
 		ut.admission.Release()
+		// Seen by bindSession if Close wins the race with release.Store.
+		ut.closed.Store(true)
 		if release := ut.release.Load(); release != nil {
 			(*release)()
 		}
@@ -510,7 +516,7 @@ func NewUDPTrackerAdmitted(conn C.PacketConn, manager *Manager, metadata *C.Meta
 	}
 
 	manager.Join(ut)
-	if err := bindSession(ut, &ut.release, metadata, pushToManager); err != nil {
+	if err := bindSession(ut, &ut.release, &ut.closed, metadata, pushToManager); err != nil {
 		return ut, err
 	}
 	return ut, nil
@@ -520,7 +526,11 @@ func NewUDPTrackerAdmitted(conn C.PacketConn, manager *Manager, metadata *C.Meta
 // joined the manager: a revocation either finds it in the session and closes
 // it, or has already happened and the tracker closes itself here. DNS and
 // dialer-proxy trackers (pushToManager false) are not sessions of the user.
-func bindSession(t Tracker, release *stdatomic.Pointer[func()], metadata *C.Metadata, pushToManager bool) error {
+//
+// The tracker may be closed from outside (provider health check, REST, manager)
+// between Bind and release.Store: its Close then sees no release, so the
+// closed flag set before that load makes this side unbind instead.
+func bindSession(t Tracker, release *stdatomic.Pointer[func()], closed *stdatomic.Bool, metadata *C.Metadata, pushToManager bool) error {
 	if !pushToManager || metadata.InSession == nil {
 		return nil
 	}
@@ -530,5 +540,8 @@ func bindSession(t Tracker, release *stdatomic.Pointer[func()], metadata *C.Meta
 		return C.ErrInboundUserRevoked
 	}
 	release.Store(&unbind)
+	if closed.Load() {
+		unbind()
+	}
 	return nil
 }
