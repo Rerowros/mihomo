@@ -258,6 +258,12 @@ func writeUsers(w writer, perUser bool) {
 	for _, t := range totals {
 		w.int("mihomo_user_connections", t.Conns, "inbound", t.Inbound, "user", t.User)
 	}
+	// The count only: the addresses themselves are not labels, they would
+	// grow the series without bound.
+	w.family("mihomo_user_ips_online", "gauge", "Client addresses of a user with open connections.")
+	for _, t := range totals {
+		w.int("mihomo_user_ips_online", t.IPs, "inbound", t.Inbound, "user", t.User)
+	}
 }
 
 // writeLimits reports the connections refused by the user limits.

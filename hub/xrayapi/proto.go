@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"runtime"
 
+	"github.com/metacubex/mihomo/tunnel/statistic"
+
 	"google.golang.org/protobuf/encoding/protowire"
 )
 
@@ -271,8 +273,17 @@ func encodeSysStats(uptime uint32) []byte {
 	return out
 }
 
-func encodeOnlineIPList(name string) []byte {
-	return appendString(nil, 1, name)
+// encodeOnlineIPList writes GetStatsOnlineIpListResponse: name and the map
+// ip -> last seen (unix seconds), field 2.
+func encodeOnlineIPList(name string, ips []statistic.UserIP) []byte {
+	out := appendString(nil, 1, name)
+	for _, ip := range ips {
+		var entry []byte
+		entry = appendString(entry, 1, ip.IP)
+		entry = appendVarint(entry, 2, uint64(ip.LastSeen))
+		out = appendMessage(out, 2, entry)
+	}
+	return out
 }
 
 func encodeAllOnlineUsers(users []string) []byte {
@@ -288,6 +299,12 @@ func encodeUsersStats(users []userTraffic, includeTraffic bool) []byte {
 	for _, user := range users {
 		var stat []byte
 		stat = appendString(stat, 1, user.Email)
+		for _, ip := range user.IPs {
+			var entry []byte
+			entry = appendString(entry, 1, ip.IP)
+			entry = appendVarint(entry, 2, uint64(ip.LastSeen))
+			stat = appendMessage(stat, 2, entry)
+		}
 		if includeTraffic {
 			var traffic []byte
 			traffic = appendVarint(traffic, 1, uint64(user.Upload))
@@ -301,6 +318,7 @@ func encodeUsersStats(users []userTraffic, includeTraffic bool) []byte {
 
 type userTraffic struct {
 	Email    string
+	IPs      []statistic.UserIP
 	Upload   int64
 	Download int64
 }

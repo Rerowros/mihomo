@@ -3,6 +3,8 @@ package metrics
 import (
 	"bufio"
 	"bytes"
+	"fmt"
+	"net/netip"
 	"strconv"
 	"strings"
 	"testing"
@@ -232,4 +234,37 @@ func TestLabelInvalidUTF8(t *testing.T) {
 	require.NoError(t, bw.Flush())
 	assert.True(t, utf8.Valid(buf.Bytes()), "%q", buf.String())
 	assert.Equal(t, "# HELP x_total x\n# TYPE x_total counter\nx_total{user=\"a�b�\",inbound=\"ok\\\"�\"} 1\n", buf.String())
+}
+
+// metrics.per-user adds the number of online addresses of every user; the
+// addresses themselves are never labels. A max-ips rejection is counted.
+func TestUserIPsAndMaxIPsRejections(t *testing.T) {
+	const inbound = "metrics-ips-in"
+	key := statistic.UserKey{Inbound: inbound, User: "dora"}
+	limits := statistic.DefaultLimitManager
+	limits.Set(statistic.UserLimit{Inbound: inbound, User: "dora", MaxIPs: 2})
+	defer limits.Delete(inbound, "dora")
+	statistic.DefaultUserManager.PushUploaded(key, 1)
+	for _, ip := range []string{"198.51.100.1", "198.51.100.1", "2001:db8::1"} {
+		admission, err := limits.AdmitFrom(key, netip.MustParseAddr(ip))
+		require.NoError(t, err)
+		defer admission.Release()
+	}
+	before, _ := find(scrape(t, Options{Enable: true}), "mihomo_user_limit_rejections_total", "reason", statistic.RejectMaxIPs)
+	_, err := limits.AdmitFrom(key, netip.MustParseAddr("198.51.100.3"))
+	require.ErrorIs(t, err, statistic.ErrUserMaxIPs)
+
+	samples := scrape(t, Options{Enable: true, PerUser: true})
+	v, ok := find(samples, "mihomo_user_ips_online", "inbound", inbound, "user", "dora")
+	require.True(t, ok)
+	assert.Equal(t, float64(2), v)
+	after, ok := find(samples, "mihomo_user_limit_rejections_total", "reason", statistic.RejectMaxIPs)
+	require.True(t, ok)
+	assert.Equal(t, before+1, after)
+	for _, s := range samples {
+		assert.NotContains(t, fmt.Sprint(s), "198.51.100.1", "an address became a label")
+	}
+
+	_, ok = find(scrape(t, Options{Enable: true}), "mihomo_user_ips_online")
+	assert.False(t, ok, "per-user series without metrics.per-user")
 }

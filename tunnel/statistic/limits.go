@@ -2,18 +2,21 @@ package statistic
 
 import (
 	"errors"
+	"net/netip"
 	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/metacubex/mihomo/component/eventbus"
+	C "github.com/metacubex/mihomo/constant"
 )
 
 var (
 	ErrUserLimitExpired  = errors.New("user expired")
 	ErrUserQuotaExceeded = errors.New("user quota exceeded")
 	ErrUserMaxConns      = errors.New("user connection limit reached")
+	ErrUserMaxIPs        = errors.New("user address limit reached")
 )
 
 // UserLimit is the policy of one inbound user. Zero means "no limit".
@@ -21,16 +24,27 @@ type UserLimit struct {
 	Inbound  string `json:"inbound" yaml:"inbound"`
 	User     string `json:"user" yaml:"user"`
 	MaxConns int    `json:"maxConns,omitempty" yaml:"max-conns,omitempty"`
-	UpBps    int64  `json:"upBps,omitempty" yaml:"up-bps,omitempty"`
-	DownBps  int64  `json:"downBps,omitempty" yaml:"down-bps,omitempty"`
-	Quota    int64  `json:"quota,omitempty" yaml:"quota,omitempty"` // upload+download bytes
-	ExpireAt int64  `json:"expireAt,omitempty" yaml:"expire-at,omitempty"`
+	// MaxIPs is the number of client addresses of the user name on all
+	// inbounds at once; see userips.go for what an address is and why it is
+	// not safe behind a CDN. Lowering it does not close open connections.
+	// It is checked by the policy of the inbound a connection comes in on: if
+	// the user has no policy on one inbound, new addresses through that
+	// inbound are not limited (they still count in the limit of the others).
+	// In Docker with userland-proxy the address of every client is the
+	// gateway of the bridge, so max-ips needs host networking or
+	// userland-proxy off there.
+	MaxIPs   int   `json:"maxIPs,omitempty" yaml:"max-ips,omitempty"`
+	UpBps    int64 `json:"upBps,omitempty" yaml:"up-bps,omitempty"`
+	DownBps  int64 `json:"downBps,omitempty" yaml:"down-bps,omitempty"`
+	Quota    int64 `json:"quota,omitempty" yaml:"quota,omitempty"` // upload+download bytes
+	ExpireAt int64 `json:"expireAt,omitempty" yaml:"expire-at,omitempty"`
 }
 
 // UserLimitStatus is UserLimit with the current usage.
 type UserLimitStatus struct {
 	UserLimit
 	Conns         int   `json:"conns"`
+	IPs           int   `json:"ips"` // addresses counted by max-ips, with the release window
 	Used          int64 `json:"used"`
 	Remaining     int64 `json:"remaining"`
 	Expired       bool  `json:"expired"`
@@ -126,6 +140,10 @@ type LimitManager struct {
 	rejectedExpired  atomic.Uint64
 	rejectedQuota    atomic.Uint64
 	rejectedMaxConns atomic.Uint64
+	rejectedMaxIPs   atomic.Uint64
+
+	// users holds the client addresses; nil means DefaultUserManager.
+	users *UserManager
 }
 
 // Reasons of a refused connection, in /metrics and on the event stream.
@@ -133,15 +151,23 @@ const (
 	RejectExpired  = "expired"
 	RejectQuota    = "quota"
 	RejectMaxConns = "max-conns"
+	RejectMaxIPs   = "max-ips"
 )
 
 // RejectReasons lists the reasons in the order of Rejections.
-var RejectReasons = []string{RejectExpired, RejectQuota, RejectMaxConns}
+var RejectReasons = []string{RejectExpired, RejectQuota, RejectMaxConns, RejectMaxIPs}
 
 // Rejections returns the number of connections Admit refused since start, in
 // the order of RejectReasons.
 func (m *LimitManager) Rejections() []uint64 {
-	return []uint64{m.rejectedExpired.Load(), m.rejectedQuota.Load(), m.rejectedMaxConns.Load()}
+	return []uint64{m.rejectedExpired.Load(), m.rejectedQuota.Load(), m.rejectedMaxConns.Load(), m.rejectedMaxIPs.Load()}
+}
+
+func (m *LimitManager) userManager() *UserManager {
+	if m.users != nil {
+		return m.users
+	}
+	return DefaultUserManager
 }
 
 // DefaultLimitManager is filled from user-limits and the controller API.
@@ -241,10 +267,11 @@ func (s *limitState) rejectEvent(now time.Time) (suppressed int64, ok bool) {
 }
 
 // publishLimit reports a user whose connections are closed (quota used up,
-// expired) or whose new connection was refused.
-func publishLimit(key UserKey, reason, action string, suppressed int64) {
+// expired) or whose new connection was refused; remote is the refused address
+// of a max-ips rejection.
+func publishLimit(key UserKey, reason, action string, suppressed int64, remote string) {
 	eventbus.Publish(eventbus.TypeUserLimit, eventbus.UserLimit{
-		Inbound: key.Inbound, User: key.User, Reason: reason, Action: action, Suppressed: suppressed,
+		Inbound: key.Inbound, User: key.User, Reason: reason, Action: action, Suppressed: suppressed, Remote: remote,
 	})
 }
 
@@ -316,24 +343,48 @@ func (m *LimitManager) Delete(inbound, user string) bool {
 
 // Admission is the connection slot of one user, taken by Admit. Release
 // returns it to the policy state it was taken from, so a policy deleted and set
-// again does not count the old connections. A nil Admission is valid: the user
-// has no policy.
+// again does not count the old connections. It also holds the client address
+// of the connection, which goes into the release window on Release. A nil
+// Admission is valid: the user has no policy and no recorded address.
 type Admission struct {
-	state *limitState
+	state *limitState // nil without a policy
+	ips   *userIPs    // nil without a recorded address
+	slot  ipSlot
+	entry *ipEntry
 	once  sync.Once
 }
 
 // Release frees the slot; calls after the first are no-ops.
 func (a *Admission) Release() {
+	a.free(false)
+}
+
+// ReleaseFor is Release for a connection of session: when the session was
+// revoked, the address is dropped without a release window. A connection that
+// passed the revoke check of the tunnel, then the forgetting of the revoked
+// addresses, then Admit, and is only refused afterwards would otherwise keep a
+// max-ips place of the user given the name again for the whole window.
+func (a *Admission) ReleaseFor(session C.InboundSession) {
+	a.free(session != nil && session.Revoked())
+}
+
+func (a *Admission) free(revoked bool) {
 	if a == nil {
 		return
 	}
 	a.once.Do(func() {
-		a.state.mu.Lock()
-		if a.state.conns > 0 {
-			a.state.conns--
+		if a.state != nil {
+			a.state.mu.Lock()
+			if a.state.conns > 0 {
+				a.state.conns--
+			}
+			a.state.mu.Unlock()
 		}
-		a.state.mu.Unlock()
+		if revoked {
+			a.ips.discard(a.slot, a.entry)
+		} else {
+			a.ips.release(a.slot, a.entry, time.Now())
+		}
 	})
 }
 
@@ -343,13 +394,31 @@ func (a *Admission) Release() {
 // /limits shows the live count and a max-conns added later sees the existing
 // connections.
 func (m *LimitManager) Admit(key UserKey) (*Admission, error) {
+	return m.AdmitFrom(key, netip.Addr{})
+}
+
+// AdmitFrom is Admit for a connection from src: the address is recorded for
+// the online list and checked against max-ips together with the slot. A
+// connection refused by max-conns records no address, one refused by max-ips
+// takes no slot. Lock order: state.mu, then the address set of the user.
+func (m *LimitManager) AdmitFrom(key UserKey, src netip.Addr) (*Admission, error) {
+	var ips *userIPs
+	slot := ipSlot{inbound: key.Inbound}
+	if ip, ok := trackedIP(src); ok {
+		slot.ip = ip
+		ips = m.userManager().ipSet(key.User, true)
+	}
 	state := m.lookup(key)
 	if state == nil {
-		return nil, nil
+		if ips == nil {
+			return nil, nil
+		}
+		entry, _ := ips.tryAcquire(slot, 0, time.Now())
+		return &Admission{ips: ips, slot: slot, entry: entry}, nil
 	}
 	state.mu.Lock()
 	now := time.Now()
-	var reason string
+	var reason, remote string
 	var err error
 	switch {
 	case state.expired(now):
@@ -362,14 +431,20 @@ func (m *LimitManager) Admit(key UserKey) (*Admission, error) {
 		m.rejectedMaxConns.Add(1)
 		reason, err = RejectMaxConns, ErrUserMaxConns
 	default:
+		entry, ok := ips.tryAcquire(slot, state.limit.MaxIPs, now)
+		if !ok {
+			m.rejectedMaxIPs.Add(1)
+			reason, err, remote = RejectMaxIPs, ErrUserMaxIPs, FormatUserIP(slot.ip)
+			break
+		}
 		state.conns++
 		state.mu.Unlock()
-		return &Admission{state: state}, nil
+		return &Admission{state: state, ips: ips, slot: slot, entry: entry}, nil
 	}
 	suppressed, report := state.rejectEvent(now)
 	state.mu.Unlock()
 	if report {
-		publishLimit(key, reason, eventbus.LimitRejected, suppressed)
+		publishLimit(key, reason, eventbus.LimitRejected, suppressed, remote)
 	}
 	return nil, err
 }
@@ -388,7 +463,7 @@ func (m *LimitManager) AddUsage(key UserKey, n int64) bool {
 	crossed := exceeded && before < state.limit.Quota
 	state.mu.Unlock()
 	if crossed && eventbus.Enabled(eventbus.TypeUserLimit) {
-		publishLimit(key, RejectQuota, eventbus.LimitClosed, 0)
+		publishLimit(key, RejectQuota, eventbus.LimitClosed, 0, "")
 	}
 	return exceeded
 }
@@ -407,7 +482,7 @@ func (m *LimitManager) Expired(key UserKey) bool {
 	}
 	state.mu.Unlock()
 	if first && eventbus.Enabled(eventbus.TypeUserLimit) {
-		publishLimit(key, RejectExpired, eventbus.LimitClosed, 0)
+		publishLimit(key, RejectExpired, eventbus.LimitClosed, 0, "")
 	}
 	return expired
 }
@@ -466,6 +541,7 @@ func (m *LimitManager) Snapshot(inbound, user string) []UserLimitStatus {
 			}
 		}
 		state.mu.Unlock()
+		status.IPs = m.userManager().limitIPCount(key.User)
 		statuses = append(statuses, status)
 	}
 	sort.Slice(statuses, func(i, j int) bool {

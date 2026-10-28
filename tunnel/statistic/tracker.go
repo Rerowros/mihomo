@@ -225,7 +225,7 @@ func (tt *tcpTracker) Close() error {
 		if tt.userStats && DefaultUserManager.Close(tt.user) {
 			publishUserSession(tt.user, eventbus.SessionOffline, nil)
 		}
-		tt.admission.Release()
+		tt.admission.ReleaseFor(tt.Metadata.InSession)
 		// Seen by bindSession if Close wins the race with release.Store.
 		tt.closed.Store(true)
 		if release := tt.release.Load(); release != nil {
@@ -451,7 +451,7 @@ func (ut *udpTracker) Close() error {
 		if ut.userStats && DefaultUserManager.Close(ut.user) {
 			publishUserSession(ut.user, eventbus.SessionOffline, nil)
 		}
-		ut.admission.Release()
+		ut.admission.ReleaseFor(ut.Metadata.InSession)
 		// Seen by bindSession if Close wins the race with release.Store.
 		ut.closed.Store(true)
 		if release := ut.release.Load(); release != nil {

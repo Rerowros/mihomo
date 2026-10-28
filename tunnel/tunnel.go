@@ -458,14 +458,14 @@ func handleUDPConn(packet C.PacketAdapter) {
 			// tracker; every error path below gives it back.
 			var admission *statistic.Admission
 			if key, ok := statistic.UserKeyOf(metadata); ok {
-				admission, err = statistic.DefaultLimitManager.Admit(key)
+				admission, err = statistic.DefaultLimitManager.AdmitFrom(key, metadata.SrcIP)
 				if err != nil {
 					warnUDPLimit(key, err)
 					return nil, nil, err
 				}
 				defer func() {
 					if err != nil {
-						admission.Release()
+						admission.ReleaseFor(metadata.InSession)
 					}
 				}()
 			}
@@ -565,12 +565,12 @@ func handleTCPConn(connCtx C.ConnContext) {
 	var admission *statistic.Admission
 	if key, ok := statistic.UserKeyOf(metadata); ok {
 		var err error
-		admission, err = statistic.DefaultLimitManager.Admit(key)
+		admission, err = statistic.DefaultLimitManager.AdmitFrom(key, metadata.SrcIP)
 		if err != nil {
 			log.Warnln("[Limit] inbound user %s/%s: %s", key.Inbound, key.User, err)
 			return
 		}
-		defer admission.Release() // the tracker owns it once created; Release is idempotent
+		defer admission.ReleaseFor(metadata.InSession) // the tracker owns it once created; ReleaseFor is idempotent
 	}
 
 	preHandleFailed := false

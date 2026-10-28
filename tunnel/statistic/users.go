@@ -50,6 +50,18 @@ type UserManager struct {
 	// resetMu orders the resets against Totals, so a reset is never seen
 	// half done (taken from the counter but not yet added to the drained).
 	resetMu sync.Mutex
+
+	// ipSets are the client addresses by user name (userips.go), guarded by
+	// mu; the sweeper of their release window starts with the first one.
+	ipSets           map[string]*userIPs
+	ipSweeper        sync.Once
+	ipSweeperStarted atomic.Bool
+	ipSweeperStop    chan struct{} // guarded by mu; closing it ends the sweeper
+	// ipRelease and ipSweepInterval are the release window and the sweep
+	// period; zero means userIPRelease and userIPSweepInterval. Tests set
+	// them before the manager is used.
+	ipRelease       time.Duration
+	ipSweepInterval time.Duration
 }
 
 // DefaultUserManager is filled by the inbound trackers.
@@ -121,6 +133,9 @@ type UserStat struct {
 	Download   int64  `json:"download"`
 	Conns      int64  `json:"conns"`
 	LastActive int64  `json:"lastActive"`
+	// IPs are the client addresses with open connections on this inbound;
+	// only SnapshotWithIPs fills them.
+	IPs []UserIP `json:"ips,omitempty"`
 }
 
 // ResetTraffic returns the counters and zeroes the requested directions in
@@ -166,6 +181,52 @@ func (m *UserManager) ResetTraffic(inbound, user string, resetUpload, resetDownl
 	return upload, download, true
 }
 
+// UserTraffic is the traffic of one user name on all inbounds.
+type UserTraffic struct {
+	Upload   int64
+	Download int64
+}
+
+// TrafficOf returns the traffic of the given user names on all inbounds in one
+// pass; with reset only their counters restart from zero (Xray's
+// GetUsersStats resets only the users it returns).
+func (m *UserManager) TrafficOf(names []string, reset bool) map[string]UserTraffic {
+	wanted := make(map[string]struct{}, len(names))
+	for _, name := range names {
+		wanted[name] = struct{}{}
+	}
+	type userCounter struct {
+		name     string
+		counters *userCounters
+	}
+	var picked []userCounter
+	m.mu.RLock()
+	for key, c := range m.users {
+		if _, ok := wanted[key.User]; ok {
+			picked = append(picked, userCounter{key.User, c})
+		}
+	}
+	m.mu.RUnlock()
+
+	traffic := make(map[string]UserTraffic, len(names))
+	if reset {
+		m.resetMu.Lock()
+		defer m.resetMu.Unlock()
+	}
+	for _, p := range picked {
+		t := traffic[p.name]
+		if reset {
+			t.Upload += p.counters.drainUp()
+			t.Download += p.counters.drainDown()
+		} else {
+			t.Upload += p.counters.upload.Load()
+			t.Download += p.counters.download.Load()
+		}
+		traffic[p.name] = t
+	}
+	return traffic
+}
+
 // drainUp and drainDown zero a counter and keep what it held in the
 // cumulative total; the caller holds UserManager.resetMu.
 func (c *userCounters) drainUp() int64 {
@@ -189,6 +250,7 @@ type UserTotal struct {
 	Upload   int64
 	Download int64
 	Conns    int64
+	IPs      int64 // addresses with open connections on this inbound
 }
 
 // Totals returns the cumulative traffic and the open connections of every
@@ -208,6 +270,9 @@ func (m *UserManager) Totals() []UserTotal {
 		})
 	}
 	m.mu.RUnlock()
+	for i := range totals {
+		totals[i].IPs = int64(len(m.OnlineIPs(totals[i].Inbound, totals[i].User)))
+	}
 	sort.Slice(totals, func(i, j int) bool {
 		if totals[i].Inbound != totals[j].Inbound {
 			return totals[i].Inbound < totals[j].Inbound
@@ -220,8 +285,19 @@ func (m *UserManager) Totals() []UserTotal {
 // Snapshot returns the counters, optionally filtered by inbound and user. With
 // reset, the traffic counters restart from zero, atomically with the read, so
 // a panel that polls and resets once a period neither loses nor counts a byte
-// twice (the analogue of Xray's QueryStats reset).
+// twice (the analogue of Xray's QueryStats reset). The IPs field stays empty:
+// the panel polls the traffic often and does not need the addresses, see
+// SnapshotWithIPs.
 func (m *UserManager) Snapshot(inbound, user string, reset bool) []UserStat {
+	return m.snapshot(inbound, user, reset, false)
+}
+
+// SnapshotWithIPs is Snapshot with the online addresses of every user.
+func (m *UserManager) SnapshotWithIPs(inbound, user string, reset bool) []UserStat {
+	return m.snapshot(inbound, user, reset, true)
+}
+
+func (m *UserManager) snapshot(inbound, user string, reset, withIPs bool) []UserStat {
 	m.mu.RLock()
 	keys := make([]UserKey, 0, len(m.users))
 	for key := range m.users {
@@ -260,14 +336,18 @@ func (m *UserManager) Snapshot(inbound, user string, reset bool) []UserStat {
 			upload = counters.drainUp()
 			download = counters.drainDown()
 		}
-		stats = append(stats, UserStat{
+		stat := UserStat{
 			Inbound:    key.Inbound,
 			User:       key.User,
 			Upload:     upload,
 			Download:   download,
 			Conns:      counters.conns.Load(),
 			LastActive: counters.lastActive.Load(),
-		})
+		}
+		if withIPs {
+			stat.IPs = m.OnlineIPs(key.Inbound, key.User)
+		}
+		stats = append(stats, stat)
 	}
 	return stats
 }
