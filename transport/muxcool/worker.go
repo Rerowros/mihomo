@@ -50,6 +50,10 @@ func (w *carrierWorker) openSession(
 	port uint16,
 	firstPayloadTimeout time.Duration,
 ) (net.Conn, error) {
+	// ctx bounds opening only: once returned, the session does not depend on it.
+	if err := context.Cause(ctx); err != nil {
+		return nil, err
+	}
 	w.mu.Lock()
 	id, err := w.allocateIDLocked()
 	if err != nil {
@@ -60,7 +64,7 @@ func (w *carrierWorker) openSession(
 	w.sessions[id] = logicalSession
 	w.mu.Unlock()
 
-	logicalSession.start(ctx, firstPayloadTimeout)
+	logicalSession.start(firstPayloadTimeout)
 	return conn, nil
 }
 

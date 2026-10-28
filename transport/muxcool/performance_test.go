@@ -392,7 +392,7 @@ func BenchmarkStreamSessionLifecycle(b *testing.B) {
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
 		conn, session := makeSession(owner, 1, "example.com", 443)
-		session.start(context.Background(), 0)
+		session.start(0)
 		if _, err := conn.Write(payload); err != nil {
 			b.Fatal(err)
 		}
@@ -404,7 +404,7 @@ func BenchmarkStreamSessionLifecycle(b *testing.B) {
 func BenchmarkSessionUplinkFrame(b *testing.B) {
 	owner := &benchmarkSessionOwner{written: make(chan struct{})}
 	conn, session := makeSession(owner, 1, "example.com", 443)
-	session.start(context.Background(), 0)
+	session.start(0)
 	payload := make([]byte, MaxPayloadSize)
 	b.Cleanup(func() { _ = conn.Close() })
 

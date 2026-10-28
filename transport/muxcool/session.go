@@ -1,7 +1,6 @@
 package muxcool
 
 import (
-	"context"
 	"errors"
 	"io"
 	"net"
@@ -101,7 +100,6 @@ var sessionBufferPool = sync.Pool{
 }
 
 func newSession(
-	ctx context.Context,
 	owner sessionOwner,
 	id uint16,
 	destination string,
@@ -109,7 +107,7 @@ func newSession(
 	firstPayloadTimeout time.Duration,
 ) (net.Conn, *session) {
 	logical, s := makeSession(owner, id, destination, port)
-	s.start(ctx, firstPayloadTimeout)
+	s.start(firstPayloadTimeout)
 	return logical, s
 }
 
@@ -134,20 +132,12 @@ func makeSession(owner sessionOwner, id uint16, destination string, port uint16)
 	return logical, s
 }
 
-func (s *session) start(ctx context.Context, firstPayloadTimeout time.Duration) {
+// start runs the session pumps. The session lives as long as the logical
+// connection and its carrier: the dial context only bounds opening (tunnel
+// passes a short WithTimeout context), as in Xray.
+func (s *session) start(firstPayloadTimeout time.Duration) {
 	go s.runUplink(firstPayloadTimeout)
 	go s.runDownlink()
-	ctxDone := ctx.Done()
-	if ctxDone == nil {
-		return
-	}
-	go func() {
-		select {
-		case <-ctxDone:
-			s.finish(context.Cause(ctx), true)
-		case <-s.done:
-		}
-	}()
 }
 
 func (s *session) runUplink(firstPayloadTimeout time.Duration) {

@@ -1,7 +1,6 @@
 package muxcool
 
 import (
-	"context"
 	"errors"
 	"io"
 	"net"
@@ -52,7 +51,7 @@ func receiveFrame(t *testing.T, frames <-chan Frame) Frame {
 
 func TestLogicalSessionIsFullDuplexAndHasAddresses(t *testing.T) {
 	owner := newFakeSessionOwner()
-	conn, session := newSession(context.Background(), owner, 11, "echo.example", 443, time.Second)
+	conn, session := newSession(owner, 11, "echo.example", 443, time.Second)
 	t.Cleanup(func() { _ = conn.Close() })
 
 	writeDone := make(chan error, 1)
@@ -88,7 +87,7 @@ func TestLogicalSessionIsFullDuplexAndHasAddresses(t *testing.T) {
 
 func TestLogicalSessionDeadlines(t *testing.T) {
 	owner := newFakeSessionOwner()
-	conn, _ := newSession(context.Background(), owner, 12, "deadline.example", 80, time.Second)
+	conn, _ := newSession(owner, 12, "deadline.example", 80, time.Second)
 	t.Cleanup(func() { _ = conn.Close() })
 
 	if err := conn.SetReadDeadline(time.Now().Add(-time.Second)); err != nil {
@@ -116,11 +115,12 @@ func isTimeout(err error) bool {
 	return errors.As(err, &netErr) && netErr.Timeout()
 }
 
-func TestLogicalSessionCancellationAndCloseAreIdempotent(t *testing.T) {
+func TestLogicalSessionCloseIsIdempotent(t *testing.T) {
 	owner := newFakeSessionOwner()
-	ctx, cancel := context.WithCancel(context.Background())
-	conn, _ := newSession(ctx, owner, 13, "cancel.example", 80, time.Second)
-	cancel()
+	conn, _ := newSession(owner, 13, "close.example", 80, time.Second)
+	if err := conn.Close(); err != nil {
+		t.Fatalf("first close: %v", err)
+	}
 
 	select {
 	case id := <-owner.removed:
@@ -128,13 +128,10 @@ func TestLogicalSessionCancellationAndCloseAreIdempotent(t *testing.T) {
 			t.Fatalf("removed session = %d", id)
 		}
 	case <-time.After(time.Second):
-		t.Fatal("session was not removed after cancellation")
+		t.Fatal("session was not removed after close")
 	}
 	if _, err := conn.Read(make([]byte, 1)); err == nil {
-		t.Fatal("read succeeded after cancellation")
-	}
-	if err := conn.Close(); err != nil {
-		t.Fatalf("first close: %v", err)
+		t.Fatal("read succeeded after close")
 	}
 	if err := conn.Close(); err != nil {
 		t.Fatalf("second close: %v", err)
@@ -143,7 +140,7 @@ func TestLogicalSessionCancellationAndCloseAreIdempotent(t *testing.T) {
 
 func TestSessionFrameStateMachine(t *testing.T) {
 	owner := newFakeSessionOwner()
-	conn, _ := newSession(context.Background(), owner, 21, "state.example", 8080, time.Second)
+	conn, _ := newSession(owner, 21, "state.example", 8080, time.Second)
 
 	if _, err := conn.Write([]byte("first")); err != nil {
 		t.Fatalf("first write: %v", err)
@@ -175,7 +172,7 @@ func TestSessionFrameStateMachine(t *testing.T) {
 
 func TestSessionSendsPayloadFreeNewForServerFirstProtocol(t *testing.T) {
 	owner := newFakeSessionOwner()
-	conn, _ := newSession(context.Background(), owner, 22, "server-first.example", 25, 5*time.Millisecond)
+	conn, _ := newSession(owner, 22, "server-first.example", 25, 5*time.Millisecond)
 	t.Cleanup(func() { _ = conn.Close() })
 
 	frame := receiveFrame(t, owner.frames)

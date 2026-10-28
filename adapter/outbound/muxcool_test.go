@@ -3,6 +3,7 @@ package outbound
 import (
 	"context"
 	"errors"
+	"io"
 	"net"
 	"net/netip"
 	"sync"
@@ -501,7 +502,9 @@ func TestMuxCoolServerFirstNewFrame(t *testing.T) {
 	}
 }
 
-func TestMuxCoolContextCancellationClosesOnlyLogicalSession(t *testing.T) {
+// tunnel dials with a short context.WithTimeout and cancels it only after the
+// relay ends; an established session must outlive that context.
+func TestMuxCoolDialContextCancellationKeepsOpenSession(t *testing.T) {
 	base := newFakeMuxCoolAdapter()
 	wrapped, err := NewMuxCool(MuxCoolOption{Enabled: true}, base)
 	if err != nil {
@@ -522,15 +525,37 @@ func TestMuxCoolContextCancellationClosesOnlyLogicalSession(t *testing.T) {
 	t.Cleanup(func() { _ = server.Close() })
 
 	cancel()
-	end, err := muxcool.DecodeFrame(server)
+	time.Sleep(50 * time.Millisecond)
+	_ = first.SetWriteDeadline(time.Now().Add(time.Second))
+	if _, err := first.Write([]byte("up")); err != nil {
+		t.Fatalf("write after dial context cancel: %v", err)
+	}
+	_ = server.SetReadDeadline(time.Now().Add(2 * time.Second))
+	for {
+		frame, err := muxcool.DecodeFrame(server)
+		if err != nil {
+			t.Fatalf("decode uplink: %v", err)
+		}
+		if frame.SessionID != 1 {
+			continue
+		}
+		if frame.Status == muxcool.StatusEnd {
+			t.Fatalf("session ended after dial context cancel: %+v", frame)
+		}
+		if string(frame.Payload) == "up" {
+			break
+		}
+	}
+	_ = server.SetReadDeadline(time.Time{})
+	downlink, err := muxcool.EncodeFrame(muxcool.Frame{SessionID: 1, Status: muxcool.StatusKeep, Option: muxcool.OptionData, Payload: []byte("hi")})
 	if err != nil {
-		t.Fatalf("decode cancelled End: %v", err)
+		t.Fatal(err)
 	}
-	if end.SessionID != 1 || end.Status != muxcool.StatusEnd {
-		t.Fatalf("cancel frame = %+v", end)
-	}
-	if _, err := first.Read(make([]byte, 1)); !errors.Is(err, context.Canceled) {
-		t.Fatalf("cancelled read error = %v", err)
+	go func() { _, _ = server.Write(downlink) }()
+	_ = first.SetReadDeadline(time.Now().Add(time.Second))
+	gotFirst := make([]byte, 2)
+	if _, err := io.ReadFull(first, gotFirst); err != nil || string(gotFirst) != "hi" {
+		t.Fatalf("read after dial context cancel = %q, %v", gotFirst, err)
 	}
 
 	response, err := muxcool.EncodeFrame(muxcool.Frame{SessionID: 2, Status: muxcool.StatusKeep, Option: muxcool.OptionData, Payload: []byte("ok")})
