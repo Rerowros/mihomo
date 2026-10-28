@@ -42,6 +42,7 @@ CURRENT_SPECS = {
     "good": (20, 0, 0, 100),
     "mobile": (70, 0, 1, 30),
     "bad": (150, 0, 1, 8),
+    "far": (200, 0, 0.1, 100),
 }
 
 RUN_COLS = ["run", "kind", "profile", "profile_ver", "scenario", "client", "server",
