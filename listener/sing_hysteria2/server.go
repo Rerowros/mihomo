@@ -40,6 +40,13 @@ type Listener struct {
 	services     []*hysteria2.Service[string]
 }
 
+// ServerMaxIncomingStreams bounds the concurrent bidirectional streams of one
+// QUIC connection. sing-quic defaults to 2^60, so a client, before it has
+// authenticated (every stream is then served by the HTTP/3 masquerade), could
+// make the server hold a goroutine per stream without limit. 1024 is the
+// default of the reference Hysteria 2 server (quic.maxIncomingStreams).
+const ServerMaxIncomingStreams = 1024
+
 func New(config LC.Hysteria2Server, lc C.InboundListenConfig, tunnel C.Tunnel, additions ...inbound.Addition) (*Listener, error) {
 	var sl *Listener
 	var err error
@@ -211,6 +218,7 @@ func New(config LC.Hysteria2Server, lc C.InboundListenConfig, tunnel C.Tunnel, a
 		MaxStreamReceiveWindow:         config.MaxStreamReceiveWindow,
 		InitialConnectionReceiveWindow: config.InitialConnectionReceiveWindow,
 		MaxConnectionReceiveWindow:     config.MaxConnectionReceiveWindow,
+		MaxIncomingStreams:             ServerMaxIncomingStreams,
 	}
 
 	service, err := hysteria2.NewService[string](hysteria2.ServiceOptions{
