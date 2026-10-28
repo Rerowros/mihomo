@@ -127,7 +127,6 @@ func collectStats() []statPair {
 	type userTotals struct {
 		upload   int64
 		download int64
-		conns    int64
 	}
 	byUser := make(map[string]*userTotals)
 	for _, stat := range statistic.DefaultUserManager.Snapshot("", "", false) {
@@ -138,7 +137,6 @@ func collectStats() []statPair {
 		}
 		totals.upload += stat.Upload
 		totals.download += stat.Download
-		totals.conns += stat.Conns
 	}
 	entries := make([]statPair, 0, 32)
 	for user, totals := range byUser {
@@ -147,9 +145,6 @@ func collectStats() []statPair {
 		}
 		if totals.download > 0 {
 			entries = append(entries, statPair{Name: "user>>>" + user + ">>>traffic>>>downlink", Value: totals.download})
-		}
-		if totals.conns > 0 {
-			entries = append(entries, statPair{Name: "user>>>" + user + ">>>online", Value: totals.conns})
 		}
 	}
 	for _, stat := range statistic.DefaultInboundManager.Snapshot() {

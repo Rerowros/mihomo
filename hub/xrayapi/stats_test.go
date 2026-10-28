@@ -1,6 +1,7 @@
 package xrayapi
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/metacubex/mihomo/tunnel/statistic"
@@ -158,5 +159,40 @@ func TestGetUsersStats(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("emails = %v", emails)
+	}
+}
+
+// T11: QueryStats returns counters only, like Xray; online is served by
+// GetStatsOnline.
+func TestQueryStatsHasNoOnline(t *testing.T) {
+	key := statistic.UserKey{Inbound: "xray-online-in", User: "xray-online-user"}
+	statistic.DefaultUserManager.PushUploaded(key, 5)
+	statistic.DefaultUserManager.Open(key)
+	defer statistic.DefaultUserManager.Close(key)
+
+	response, status, message := queryStats(nil)
+	if status != 0 {
+		t.Fatalf("query stats status = %d: %s", status, message)
+	}
+	err := walkFields(response, func(num protowire.Number, _ protowire.Type, _ uint64, b []byte) error {
+		if num != 1 {
+			return nil
+		}
+		return walkFields(b, func(statNum protowire.Number, _ protowire.Type, _ uint64, name []byte) error {
+			if statNum == 1 && strings.HasSuffix(string(name), ">>>online") {
+				t.Errorf("QueryStats returned %s", name)
+			}
+			return nil
+		})
+	})
+	if err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	_, status, message = getStatsOnline(appendString(nil, 1, "user>>>xray-online-user>>>online"))
+	if status != 0 {
+		t.Fatalf("GetStatsOnline status = %d: %s", status, message)
+	}
+	if value, found := statValue("user>>>xray-online-user>>>online", false); !found || value != 1 {
+		t.Fatalf("online = %d, found = %v", value, found)
 	}
 }
