@@ -47,6 +47,16 @@ func WithInboundSession(ctx context.Context, session C.InboundSession) context.C
 	return context.WithValue(ctx, ctxKeyInboundSession, session)
 }
 
+// userSession is the session of the authenticated user, nil without one: only
+// an authenticated user can have a session, so connections of listeners
+// without users (TUN, mixed) skip the session lookup.
+func userSession(ctx context.Context) C.InboundSession {
+	if _, ok := auth.UserFromContext[string](ctx); !ok {
+		return nil
+	}
+	return inboundSession(ctx)
+}
+
 func inboundSession(ctx context.Context) C.InboundSession {
 	if v := ctx.Value(ctxKeyInboundSession); v != nil {
 		if session, ok := v.(C.InboundSession); ok {
