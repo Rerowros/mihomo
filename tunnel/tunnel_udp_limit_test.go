@@ -1,6 +1,8 @@
 package tunnel_test
 
 import (
+	"context"
+	"fmt"
 	"net"
 	"net/netip"
 	"sync"
@@ -10,6 +12,7 @@ import (
 
 	"github.com/metacubex/mihomo/adapter"
 	"github.com/metacubex/mihomo/adapter/outbound"
+	"github.com/metacubex/mihomo/component/loopback"
 	C "github.com/metacubex/mihomo/constant"
 	"github.com/metacubex/mihomo/tunnel"
 	"github.com/metacubex/mihomo/tunnel/statistic"
@@ -31,14 +34,50 @@ func (p *limitTestPacket) LocalAddr() net.Addr { return p.local }
 
 var setupLimitTunnel sync.Once
 
-// T7: with max-conns 1 every packet of the one admitted association passes;
-// only a second association is refused.
-func TestUDPMaxConnsCountsAssociations(t *testing.T) {
+// countingProxy is DIRECT that counts the dials reaching it; with fail set
+// they fail at once (with an error the tunnel does not retry).
+type countingProxy struct {
+	C.Proxy
+	fail   bool
+	dials  atomic.Int32
+	listen atomic.Int32
+}
+
+func (p *countingProxy) DialContext(ctx context.Context, metadata *C.Metadata) (C.Conn, error) {
+	p.dials.Add(1)
+	if p.fail {
+		return nil, fmt.Errorf("test: %w", loopback.ErrReject)
+	}
+	return p.Proxy.DialContext(ctx, metadata)
+}
+
+func (p *countingProxy) ListenPacketContext(ctx context.Context, metadata *C.Metadata) (C.PacketConn, error) {
+	p.listen.Add(1)
+	if p.fail {
+		return nil, fmt.Errorf("test: %w", loopback.ErrReject)
+	}
+	return p.Proxy.ListenPacketContext(ctx, metadata)
+}
+
+var failingProxy = &countingProxy{Proxy: adapter.NewProxy(outbound.NewDirect()), fail: true}
+
+// setupTestTunnel starts the tunnel once for this package: DIRECT, plus
+// FAIL (every dial fails, counted), reached through Metadata.SpecialProxy.
+func setupTestTunnel() {
 	setupLimitTunnel.Do(func() {
-		tunnel.UpdateProxies(map[string]C.Proxy{"DIRECT": adapter.NewProxy(outbound.NewDirect())}, nil)
+		tunnel.UpdateProxies(map[string]C.Proxy{
+			"DIRECT": adapter.NewProxy(outbound.NewDirect()),
+			"FAIL":   failingProxy,
+		}, nil)
 		tunnel.SetMode(tunnel.Direct)
 		tunnel.OnRunning()
 	})
+}
+
+// T7: with max-conns 1 every packet of the one admitted association passes;
+// only a second association is refused.
+func TestUDPMaxConnsCountsAssociations(t *testing.T) {
+	setupTestTunnel()
 
 	echo, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
 	if err != nil {
