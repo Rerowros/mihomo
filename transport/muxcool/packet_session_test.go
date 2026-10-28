@@ -129,3 +129,30 @@ func TestPacketSessionDeadlinesAndExplicitClose(t *testing.T) {
 	case <-time.After(20 * time.Millisecond):
 	}
 }
+
+// v2fly and older Xray servers send UDP responses without a target; the
+// packet is from the session destination and the carrier must stay up.
+func TestPacketSessionResponseWithoutTargetUsesSessionDestination(t *testing.T) {
+	carrier := newTestCarrier()
+	worker := newCarrierWorker(carrier, 8, 128, nil)
+	t.Cleanup(func() { worker.close(nil) })
+	packetConn, err := worker.openPacketSession("8.8.8.8", 53, [8]byte{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = packetConn.Close() })
+
+	carrier.inject(t, Frame{SessionID: 1, Status: StatusKeep, Option: OptionData, Payload: []byte("answer")})
+	_ = packetConn.SetReadDeadline(time.Now().Add(time.Second))
+	buffer := make([]byte, 16)
+	n, addr, err := packetConn.ReadFrom(buffer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(buffer[:n]) != "answer" || addr.String() != "8.8.8.8:53" {
+		t.Fatalf("ReadFrom = (%q, %v)", buffer[:n], addr)
+	}
+	if carrier.isClosed() || worker.activeSessions() != 1 {
+		t.Fatalf("carrier closed = %t, active sessions = %d", carrier.isClosed(), worker.activeSessions())
+	}
+}

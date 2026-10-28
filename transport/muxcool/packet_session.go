@@ -225,11 +225,17 @@ func (s *packetSession) deliverFrame(frame Frame) error {
 func (s *packetSession) deliverDecodedFrame(decoded decodedFrame) error {
 	frame := decoded.Frame
 	if frame.Option&OptionData != 0 {
+		var (
+			addr net.Addr
+			err  error
+		)
 		if frame.Network != NetworkUDP || frame.Destination == "" && !frame.DestinationIP.IsValid() {
-			decoded.releasePayload()
-			return protocolError("deliver UDP", errors.New("response frame is missing a UDP target"))
+			// v2fly and older Xray servers answer without a target: the
+			// packet comes from the session destination, as Xray assumes.
+			addr, err = makePacketAddr(s.destination, s.port)
+		} else {
+			addr, err = makeDecodedPacketAddr(frame)
 		}
-		addr, err := makeDecodedPacketAddr(frame)
 		if err != nil {
 			decoded.releasePayload()
 			return protocolError("deliver UDP", err)
