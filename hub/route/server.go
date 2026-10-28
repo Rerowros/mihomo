@@ -18,6 +18,7 @@ import (
 	"github.com/metacubex/mihomo/component/ca"
 	"github.com/metacubex/mihomo/component/ech"
 	C "github.com/metacubex/mihomo/constant"
+	"github.com/metacubex/mihomo/hub/metrics"
 	"github.com/metacubex/mihomo/log"
 	"github.com/metacubex/mihomo/ntp"
 	"github.com/metacubex/mihomo/tunnel/statistic"
@@ -54,7 +55,7 @@ type Traffic struct {
 
 type Memory struct {
 	Inuse   uint64 `json:"inuse"`
-	OSLimit uint64 `json:"oslimit"` // maybe we need it in the future
+	OSLimit uint64 `json:"oslimit"` // the Go runtime memory limit, 0 when unlimited
 }
 
 type Config struct {
@@ -105,6 +106,8 @@ func SetUIPath(path string) {
 func router(isDebug bool, secret string, dohServer string, cors Cors) *chi.Mux {
 	r := chi.NewRouter()
 	cors.Apply(r)
+	r.Get("/healthz", healthAuth(secret, probe(metrics.Live)))
+	r.Get("/readyz", healthAuth(secret, probe(metrics.Ready)))
 	if isDebug {
 		r.Mount("/debug", func() http.Handler {
 			r := chi.NewRouter()
@@ -125,6 +128,7 @@ func router(isDebug bool, secret string, dohServer string, cors Cors) *chi.Mux {
 		r.Get("/traffic", traffic)
 		r.Get("/traffic/users", trafficUsers)
 		r.Get("/memory", memory)
+		r.Get("/metrics", getMetrics)
 		r.Get("/version", version)
 		r.Mount("/configs", configRouter())
 		r.Mount("/proxies", proxyRouter())
@@ -450,7 +454,7 @@ func memory(w http.ResponseWriter, r *http.Request) {
 		}
 		if err := json.NewEncoder(buf).Encode(Memory{
 			Inuse:   inuse,
-			OSLimit: 0,
+			OSLimit: metrics.MemoryLimit(), // read every tick, the limit can change at runtime
 		}); err != nil {
 			break
 		}

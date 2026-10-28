@@ -18,6 +18,9 @@ type InboundStat struct {
 type inboundCounters struct {
 	upload   atomic.Int64
 	download atomic.Int64
+	// drained* keep what the resets took, see userCounters.
+	drainedUp   atomic.Int64
+	drainedDown atomic.Int64
 }
 
 // InboundManager keeps the traffic counters of the inbound listeners, including
@@ -25,6 +28,7 @@ type inboundCounters struct {
 type InboundManager struct {
 	mu       sync.RWMutex
 	inbounds map[string]*inboundCounters
+	resetMu  sync.Mutex // see UserManager.resetMu
 }
 
 // DefaultInboundManager is filled by the inbound trackers.
@@ -69,13 +73,17 @@ func (m *InboundManager) ResetTraffic(inbound string, resetUpload, resetDownload
 	if counters == nil {
 		return 0, 0, false
 	}
+	m.resetMu.Lock()
+	defer m.resetMu.Unlock()
 	if resetUpload {
 		upload = counters.upload.Swap(0)
+		counters.drainedUp.Add(upload)
 	} else {
 		upload = counters.upload.Load()
 	}
 	if resetDownload {
 		download = counters.download.Swap(0)
+		counters.drainedDown.Add(download)
 	} else {
 		download = counters.download.Load()
 	}
@@ -91,6 +99,25 @@ func (m *InboundManager) Snapshot() []InboundStat {
 			Inbound:  inbound,
 			Upload:   counters.upload.Load(),
 			Download: counters.download.Load(),
+		})
+	}
+	m.mu.RUnlock()
+	sort.Slice(stats, func(i, j int) bool { return stats[i].Inbound < stats[j].Inbound })
+	return stats
+}
+
+// Totals returns the cumulative traffic of every inbound since the start of
+// the process; the resets of the Xray API do not lower it.
+func (m *InboundManager) Totals() []InboundStat {
+	m.resetMu.Lock()
+	defer m.resetMu.Unlock()
+	m.mu.RLock()
+	stats := make([]InboundStat, 0, len(m.inbounds))
+	for inbound, counters := range m.inbounds {
+		stats = append(stats, InboundStat{
+			Inbound:  inbound,
+			Upload:   counters.drainedUp.Load() + counters.upload.Load(),
+			Download: counters.drainedDown.Load() + counters.download.Load(),
 		})
 	}
 	m.mu.RUnlock()

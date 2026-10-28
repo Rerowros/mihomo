@@ -113,6 +113,26 @@ func (s *limitState) expired(now time.Time) bool {
 type LimitManager struct {
 	table atomic.Pointer[map[UserKey]*limitState]
 	mu    sync.Mutex
+
+	rejectedExpired  atomic.Uint64
+	rejectedQuota    atomic.Uint64
+	rejectedMaxConns atomic.Uint64
+}
+
+// Reasons of a refused connection, in /metrics and on the event stream.
+const (
+	RejectExpired  = "expired"
+	RejectQuota    = "quota"
+	RejectMaxConns = "max-conns"
+)
+
+// RejectReasons lists the reasons in the order of Rejections.
+var RejectReasons = []string{RejectExpired, RejectQuota, RejectMaxConns}
+
+// Rejections returns the number of connections Admit refused since start, in
+// the order of RejectReasons.
+func (m *LimitManager) Rejections() []uint64 {
+	return []uint64{m.rejectedExpired.Load(), m.rejectedQuota.Load(), m.rejectedMaxConns.Load()}
 }
 
 // DefaultLimitManager is filled from user-limits and the controller API.
@@ -292,12 +312,15 @@ func (m *LimitManager) Admit(key UserKey) (*Admission, error) {
 	state.mu.Lock()
 	defer state.mu.Unlock()
 	if state.expired(time.Now()) {
+		m.rejectedExpired.Add(1)
 		return nil, ErrUserLimitExpired
 	}
 	if state.limit.Quota > 0 && state.used >= state.limit.Quota {
+		m.rejectedQuota.Add(1)
 		return nil, ErrUserQuotaExceeded
 	}
 	if state.limit.MaxConns > 0 && state.conns >= state.limit.MaxConns {
+		m.rejectedMaxConns.Add(1)
 		return nil, ErrUserMaxConns
 	}
 	state.conns++
