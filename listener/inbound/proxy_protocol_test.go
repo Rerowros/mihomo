@@ -167,7 +167,8 @@ func listenPP(t *testing.T, tunnel C.Tunnel, in ppInbound, err error) netip.Addr
 }
 
 // ppUsers are the users of the SOCKS and mixed inbounds: an inbound of none takes the
-// default auth store, whose allow-lan filter turns the client of the header away.
+// default auth store, and with no config loaded its lan-allowed-ips list is empty, so it
+// turns every address away, the loopback one included.
 var ppUsers = inbound.AuthUsers{{Username: "test", Password: userUUID}}
 
 // outPP returns out, made with err, closed with the test.
