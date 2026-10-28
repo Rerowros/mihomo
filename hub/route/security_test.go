@@ -281,6 +281,62 @@ func TestReCreateServerRetriesFailedListener(t *testing.T) {
 	}
 }
 
+// A listener that never comes up (here a tls port held by another program)
+// is retried by a reload with the same configuration, but the working tcp
+// listener is not restarted and its streams stay open.
+func TestReCreateServerKeepsWorkingListener(t *testing.T) {
+	busy, err := stdnet.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tlsAddr := busy.Addr().String()
+	addr := freeLoopbackAddr(t)
+	t.Cleanup(func() {
+		_ = busy.Close()
+		ReCreateServer(&Config{})
+		serverMu.Lock()
+		applied = nil
+		serverMu.Unlock()
+	})
+
+	cfg := Config{Addr: addr, TLSAddr: tlsAddr, Secret: testSecret}
+	ReCreateServer(&cfg)
+	serverMu.Lock()
+	tcp, tlsUp := httpServer, tlsServer != nil
+	serverMu.Unlock()
+	if tcp == nil || tlsUp {
+		t.Fatalf("tcp started %v, tls started %v; want tcp only", tcp != nil, tlsUp)
+	}
+	stream := openLogsStream(t, addr, testSecret)
+	defer stream.Close()
+
+	for i := 0; i < 2; i++ {
+		same := cfg
+		ReCreateServer(&same)
+	}
+	serverMu.Lock()
+	same := httpServer == tcp
+	serverMu.Unlock()
+	if !same {
+		t.Error("tcp listener restarted by a reload with the same configuration")
+	}
+	// The stream carries the log lines of the retry; it must stay open.
+	_ = stream.SetReadDeadline(time.Now().Add(200 * time.Millisecond))
+	if _, err := io.Copy(io.Discard, stream); err == nil || !isTimeout(err) {
+		t.Fatalf("stream after an unchanged reload: %v, want a read timeout", err)
+	}
+
+	// Once the port is free the failed tls listener comes up on the next reload.
+	_ = busy.Close()
+	ReCreateServer(&cfg)
+	serverMu.Lock()
+	tlsUp, same = tlsServer != nil, httpServer == tcp
+	serverMu.Unlock()
+	if !tlsUp || !same {
+		t.Errorf("after the tls port was freed: tls started %v, tcp kept %v; want both", tlsUp, same)
+	}
+}
+
 func isTimeout(err error) bool {
 	var ne stdnet.Error
 	if e, ok := err.(stdnet.Error); ok {

@@ -36,9 +36,10 @@ import (
 var (
 	uiPath = ""
 
-	// serverMu guards the servers below and applied.
+	// serverMu guards the servers below, applied and failed.
 	serverMu   sync.Mutex
 	applied    *appliedConfig
+	failed     []transport
 	httpServer *http.Server
 	tlsServer  *http.Server
 	unixServer *http.Server
@@ -105,36 +106,57 @@ func (c Cors) Apply(r chi.Router) {
 	}).Handler)
 }
 
+// transport is one controller listener: its start function (re)starts it.
+type transport struct {
+	name  string
+	start func(cfg *Config) error
+}
+
+func transports() []transport {
+	ts := []transport{{"tcp", start}, {"tls", startTLS}, {"unix", startUnix}}
+	if inbound.SupportNamedPipe {
+		ts = append(ts, transport{"pipe", startPipe})
+	}
+	return ts
+}
+
+// startTransports starts ts and returns the ones that did not come up.
+func startTransports(cfg *Config, ts []transport) []transport {
+	var down []transport
+	for _, t := range ts {
+		if t.start(cfg) != nil {
+			down = append(down, t)
+		}
+	}
+	return down
+}
+
 // ReCreateServer applies the controller configuration. The listeners are
 // rebuilt only when something in it changed (or the ui path did): then every
 // transport restarts with the new secret, TLS, address and CORS policy, and the
 // open websocket streams, authorized by the old settings, are closed. An
-// unchanged configuration leaves the listeners and their clients alone.
+// unchanged configuration leaves the running listeners and their clients
+// alone and only retries the listeners that did not come up last time (port
+// taken, missing certificate), so one listener that never starts does not
+// restart the others and drop their streams on every reload.
 func ReCreateServer(cfg *Config) {
 	serverMu.Lock()
 	defer serverMu.Unlock()
 
 	state := appliedConfig{cfg: *cfg, uiPath: uiPath}
 	if applied != nil && reflect.DeepEqual(*applied, state) {
+		if len(failed) > 0 {
+			failed = startTransports(cfg, failed)
+		}
 		return
 	}
 	if applied != nil {
 		log.Infoln("External controller settings changed, restarting the controller listeners")
 	}
-	applied = nil
 
 	closeStreams()
-	ok := start(cfg) == nil
-	ok = startTLS(cfg) == nil && ok
-	ok = startUnix(cfg) == nil && ok
-	if inbound.SupportNamedPipe {
-		ok = startPipe(cfg) == nil && ok
-	}
-	// A listener that did not come up (port taken, missing certificate) is
-	// retried by the next ReCreateServer even with the same configuration.
-	if ok {
-		applied = &state
-	}
+	failed = startTransports(cfg, transports())
+	applied = &state
 }
 
 func SetUIPath(path string) {
