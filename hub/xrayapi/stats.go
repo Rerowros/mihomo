@@ -55,8 +55,10 @@ func statValue(name string, reset bool) (int64, bool) {
 	if len(parts) == 3 && parts[2] == "online" {
 		switch parts[0] {
 		case "user":
-			_, _, conns, found := sumUsers("", parts[1], false)
-			return conns, found
+			// Like Xray: the number of addresses with open connections.
+			_, _, _, found := sumUsers("", parts[1], false)
+			online := int64(len(statistic.DefaultUserManager.OnlineIPs("", parts[1])))
+			return online, found || online > 0
 		case "inbound":
 			_, _, conns, found := sumUsers(parts[1], "", false)
 			return conns, found
@@ -183,23 +185,19 @@ func getStatsOnlineIPList(message []byte) ([]byte, int, string) {
 	if _, found := statValue(name, false); !found {
 		return nil, 5, name + " not found."
 	}
-	return encodeOnlineIPList(name), 0, ""
+	var ips []statistic.UserIP
+	if parts := strings.Split(name, ">>>"); len(parts) == 3 && parts[0] == "user" {
+		ips = statistic.DefaultUserManager.OnlineIPs("", parts[1])
+	}
+	return encodeOnlineIPList(name, ips), 0, ""
 }
 
+// getAllOnlineUsers lists, like Xray, the users with an online address.
 func getAllOnlineUsers(_ []byte) ([]byte, int, string) {
 	var users []string
-	seen := make(map[string]struct{})
-	for _, stat := range statistic.DefaultUserManager.Snapshot("", "", false) {
-		if stat.Conns <= 0 {
-			continue
-		}
-		if _, ok := seen[stat.User]; ok {
-			continue
-		}
-		seen[stat.User] = struct{}{}
-		users = append(users, "user>>>"+stat.User+">>>online")
+	for _, user := range statistic.DefaultUserManager.OnlineUsers() {
+		users = append(users, "user>>>"+user+">>>online")
 	}
-	sort.Strings(users)
 	return encodeAllOnlineUsers(users), 0, ""
 }
 
@@ -217,20 +215,24 @@ func getUsersStats(message []byte) ([]byte, int, string) {
 	if err != nil {
 		return nil, 3, err.Error()
 	}
-	byEmail := make(map[string]*userTraffic)
-	for _, stat := range statistic.DefaultUserManager.Snapshot("", "", reset) {
-		user := byEmail[stat.User]
-		if user == nil {
-			user = &userTraffic{Email: stat.User}
-			byEmail[stat.User] = user
+	// Like Xray: only the users with an online address, with their
+	// addresses; a reset zeroes only their traffic.
+	var users []userTraffic
+	var emails []string
+	for _, email := range statistic.DefaultUserManager.OnlineUsers() {
+		ips := statistic.DefaultUserManager.OnlineIPs("", email)
+		if len(ips) == 0 {
+			continue // went offline in between
 		}
-		user.Upload += stat.Upload
-		user.Download += stat.Download
+		users = append(users, userTraffic{Email: email, IPs: ips})
+		emails = append(emails, email)
 	}
-	users := make([]userTraffic, 0, len(byEmail))
-	for _, user := range byEmail {
-		users = append(users, *user)
+	if includeTraffic && len(emails) > 0 {
+		traffic := statistic.DefaultUserManager.TrafficOf(emails, reset)
+		for i := range users {
+			users[i].Upload = traffic[users[i].Email].Upload
+			users[i].Download = traffic[users[i].Email].Download
+		}
 	}
-	sort.Slice(users, func(i, j int) bool { return users[i].Email < users[j].Email })
 	return encodeUsersStats(users, includeTraffic), 0, ""
 }
