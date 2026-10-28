@@ -96,12 +96,17 @@ func (c *Config) Validate() error {
 }
 
 // isDohPath reports whether path is the DoH path or below it. A plain prefix
-// match would let a DoH path "/c" uncover /configs and /connections.
+// match would let a DoH path "/c" uncover /configs and /connections. The root
+// "/" has the whole API below it, so a DoH path "/" uncovers only "/" itself.
 func isDohPath(path, dohPath string) bool {
 	if len(dohPath) == 0 || dohPath[0] != '/' {
 		return false
 	}
-	return path == dohPath || strings.HasPrefix(path, strings.TrimSuffix(dohPath, "/")+"/")
+	base := strings.TrimSuffix(dohPath, "/")
+	if base == "" {
+		return path == "/"
+	}
+	return path == dohPath || strings.HasPrefix(path, base+"/")
 }
 
 // browserGuard protects a tcp or tls controller without a secret from web

@@ -137,6 +137,9 @@ func TestBrowserGuardDohPathExact(t *testing.T) {
 		{"/dns-query/", "/dns-query/x", http.StatusOK},
 		{"/dns-query", "/dns-query-x", http.StatusForbidden},
 		{"", "/configs", http.StatusForbidden},
+		{"/", "/", http.StatusOK},
+		{"/", "/configs", http.StatusForbidden},
+		{"/", "/connections", http.StatusForbidden},
 	} {
 		h := browserGuard(ok, nil, tc.doh)
 		req := httptest.NewRequest(http.MethodGet, tc.path, nil)
