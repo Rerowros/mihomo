@@ -160,7 +160,7 @@ def chart_p8():
     g = lambda c, m, s=1.0: val("good", "S2", c, m, s)  # noqa: E731
     title = (f"xhttp: с P8 (B) пинг {num(g('B', 'ping_us.p50', 1e-3))} мс как у Xray "
              f"({num(g('XC', 'ping_us.p50', 1e-3))}), у upstream {num(g('U', 'ping_us.p50', 1e-3))}; "
-             f"отдача {num(g('B', 'upload_1.mbps'))} против {num(g('U', 'upload_1.mbps'))} Мбит/с")
+             f"отдача {num(g('R', 'upload_1.mbps'))} у R (P5) против {num(g('U', 'upload_1.mbps'))} у upstream")
     return profile_grid(
         "p8-xhttp.png", title,
         [(c, "S2", c, COLORS[c]) for c in ("U", "R", "B", "XC")],
@@ -345,12 +345,12 @@ CLIENT_ROWS = [
     # patch, what, scenario, metric, scale, profiles, verdict
     ("P8 xhttp", "пинг p50, мс", "S2", "ping_us.p50", 1e-3, None,
      "доказано: B = Xray, U и R хуже"),
-    ("P8 xhttp", "отдача 1 поток, Мбит/с", "S2", "upload_1.mbps", 1, ["good"],
-     "доказано на good; на mobile/bad упор в канал"),
+    ("P5 xhttp (уже в R)", "отдача 1 поток, Мбит/с", "S2", "upload_1.mbps", 1, ["good"],
+     "доказано: прирост даёт P5 (R = B), он уже в приложении; на mobile/bad упор в канал"),
     ("P8 xhttp", "новое соединение p50, мс", "S2", "connect_ms.p50", 1, None,
      "лучше U/R; Xray быстрее за счёт xmux — см. строку ниже"),
     ("xmux (S2X)", "новое соединение p50, мс", "S2X", "connect_ms.p50", 1, None,
-     "ждёт прогона 2"),
+     "доказано: с xmux в подписке B = Xray; U/R тоже ускоряются (настройка подписки, не код)"),
     ("P15 mux.cool", "новое соединение p50, мс", "S3M", "connect_ms.p50", 1, None,
      "доказано: B = Xray, быстрее U и R"),
     ("P15 mux.cool", "загрузка 8 потоков, Мбит/с", "S3M", "download_8.mbps", 1, None,
