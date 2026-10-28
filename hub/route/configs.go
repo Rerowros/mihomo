@@ -133,6 +133,7 @@ type tuicServerSchema struct {
 
 func getConfigs(w http.ResponseWriter, r *http.Request) {
 	general := executor.GetGeneral()
+	redactGeneral(general)
 	render.JSON(w, r, general)
 }
 
