@@ -45,6 +45,13 @@ func WithExternalControllerRoutingMark(externalControllerRoutingMark int) Option
 	}
 }
 
+// WithExternalControllerAllowInsecure sets external-controller-allow-insecure.
+func WithExternalControllerAllowInsecure(allow bool) Option {
+	return func(cfg *config.Config) {
+		cfg.Controller.AllowInsecure = allow
+	}
+}
+
 func WithSecret(secret string) Option {
 	return func(cfg *config.Config) {
 		cfg.Controller.Secret = secret
@@ -61,7 +68,11 @@ func applyRoute(cfg *config.Config) {
 	if cfg.Controller.ExternalUI != "" {
 		route.SetUIPath(cfg.Controller.ExternalUI)
 	}
-	route.ReCreateServer(&route.Config{
+	route.ReCreateServer(routeConfig(cfg))
+}
+
+func routeConfig(cfg *config.Config) *route.Config {
+	return &route.Config{
 		Addr:           cfg.Controller.ExternalController,
 		TLSAddr:        cfg.Controller.ExternalControllerTLS,
 		UnixAddr:       cfg.Controller.ExternalControllerUnix,
@@ -79,7 +90,24 @@ func applyRoute(cfg *config.Config) {
 			AllowOrigins:        cfg.Controller.Cors.AllowOrigins,
 			AllowPrivateNetwork: cfg.Controller.Cors.AllowPrivateNetwork,
 		},
-	})
+		AllowInsecure: cfg.Controller.AllowInsecure,
+	}
+}
+
+// controllerReloader lets PUT /configs apply the controller part of a new
+// configuration, with the same command line overrides as the startup and
+// SIGHUP: without them a reload would drop, say, a secret given by -secret.
+func controllerReloader(options []Option) route.ControllerReloader {
+	return func(cfg *config.Config) (func(), error) {
+		for _, option := range options {
+			option(cfg)
+		}
+		rc := routeConfig(cfg)
+		if err := rc.Validate(); err != nil {
+			return nil, err
+		}
+		return func() { applyRoute(cfg) }, nil
+	}
 }
 
 // Parse call at the beginning of mihomo
@@ -101,6 +129,7 @@ func Parse(configBytes []byte, options ...Option) error {
 		option(cfg)
 	}
 
+	route.SetControllerReloader(controllerReloader(options))
 	ApplyConfig(cfg)
 	return nil
 }
