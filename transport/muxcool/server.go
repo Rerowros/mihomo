@@ -21,11 +21,13 @@ import (
 const (
 	defaultXUDPIdleTimeout       = time.Minute
 	defaultMaxSessionsPerCarrier = 1024
+	defaultCloseTimeout          = 5 * time.Second
 )
 
 var (
 	ErrServerClosed       = errors.New("mux.cool server is closed")
 	ErrDuplicateSessionID = errors.New("mux.cool duplicate session ID")
+	ErrCloseTimeout       = errors.New("mux.cool server close timed out waiting for handlers")
 )
 
 type ServerHandler interface {
@@ -41,6 +43,9 @@ type ServerOptions struct {
 	XUDPIdleTimeout       time.Duration
 	MaxSessionsPerCarrier int
 	AfterFunc             func(time.Duration, func()) ServerTimer
+	// CloseTimeout bounds how long Close waits for carriers and XUDP
+	// handlers after cancelling them; 0 uses 5 s.
+	CloseTimeout time.Duration
 }
 
 type ServerRuntime struct {
@@ -60,6 +65,9 @@ func NewServerRuntime(options ServerOptions) *ServerRuntime {
 	}
 	if options.MaxSessionsPerCarrier <= 0 {
 		options.MaxSessionsPerCarrier = defaultMaxSessionsPerCarrier
+	}
+	if options.CloseTimeout <= 0 {
+		options.CloseTimeout = defaultCloseTimeout
 	}
 	if options.AfterFunc == nil {
 		options.AfterFunc = func(duration time.Duration, callback func()) ServerTimer {
@@ -94,7 +102,12 @@ func (r *ServerRuntime) Serve(ctx context.Context, conn net.Conn, metadata M.Met
 	return carrier.serve()
 }
 
+// Close cancels every carrier and XUDP flow and waits for them to stop, at
+// most CloseTimeout: a handler that ignores cancellation must not hang a
+// listener reload. Late handlers then finish on their own; ErrCloseTimeout
+// reports that.
 func (r *ServerRuntime) Close() error {
+	var err error
 	r.close.Do(func() {
 		r.mu.Lock()
 		r.closed = true
@@ -114,9 +127,20 @@ func (r *ServerRuntime) Close() error {
 		for _, flow := range flows {
 			flow.closeWithError(ErrServerClosed)
 		}
-		r.wg.Wait()
+		stopped := make(chan struct{})
+		go func() {
+			r.wg.Wait()
+			close(stopped)
+		}()
+		timer := time.NewTimer(r.options.CloseTimeout)
+		defer timer.Stop()
+		select {
+		case <-stopped:
+		case <-timer.C:
+			err = ErrCloseTimeout
+		}
 	})
-	return nil
+	return err
 }
 
 type xudpFlowKey struct {

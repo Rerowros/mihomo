@@ -609,3 +609,42 @@ func TestServerRuntimeCloseDrainsCarriers(t *testing.T) {
 		t.Fatalf("Serve after Close = %v, want ErrServerClosed", err)
 	}
 }
+
+// A handler that ignores cancellation must not hang Close (listener reload).
+func TestServerRuntimeCloseIsBoundedByCloseTimeout(t *testing.T) {
+	runtime := NewServerRuntime(ServerOptions{XUDPIdleTimeout: time.Hour, CloseTimeout: 100 * time.Millisecond})
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
+	started := make(chan struct{})
+	handler := testServerHandler{
+		tcp: func(context.Context, net.Conn, M.Metadata) error { return errors.New("unexpected TCP") },
+		udp: func(context.Context, N.PacketConn, M.Metadata) error {
+			close(started)
+			<-release
+			return nil
+		},
+	}
+	carrier, server := net.Pipe()
+	t.Cleanup(func() { _ = carrier.Close() })
+	go func() { _ = runtime.Serve(context.Background(), server, testCarrierMetadata(), handler) }()
+	writeTestFrame(t, carrier, Frame{
+		SessionID: 1, Status: StatusNew, Option: OptionData, Network: NetworkUDP,
+		Destination: "stuck.example", Port: 53, GlobalID: [8]byte{9, 9, 9, 9, 9, 9, 9, 9}, Payload: []byte("x"),
+	})
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("XUDP handler did not start")
+	}
+
+	closed := make(chan error, 1)
+	go func() { closed <- runtime.Close() }()
+	select {
+	case err := <-closed:
+		if !errors.Is(err, ErrCloseTimeout) {
+			t.Fatalf("Close = %v, want ErrCloseTimeout", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Close blocked on a handler that ignores cancellation")
+	}
+}
