@@ -28,7 +28,7 @@ func TestRealityChromeClientHelloPreservesFingerprint(t *testing.T) {
 	assertClientHelloShape(t, baseline, hello)
 
 	plainSessionID := decryptRealitySessionID(t, hello, privateKey)
-	if got, want := [3]byte(plainSessionID[:3]), [3]byte{26, 3, 27}; got != want {
+	if got, want := [3]byte(plainSessionID[:3]), [3]byte(DefaultRealityClientVersion); got != want {
 		t.Fatalf("REALITY compatibility version = %v, want %v", got, want)
 	}
 	if plainSessionID[3] != 0 {
