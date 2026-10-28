@@ -102,3 +102,34 @@ func TestPostInboundUserCaseInsensitiveDuplicate(t *testing.T) {
 		t.Fatalf("users = %+v", users)
 	}
 }
+
+// S-3: DELETE finds the user by name without case, like POST.
+func TestDeleteInboundUserCaseInsensitive(t *testing.T) {
+	name := "route-delete-case"
+	startRouteVless(t, name, []inbound.VlessUser{{Username: "alice", UUID: utils.NewUUIDV4().String()}, {Username: "bob", UUID: utils.NewUUIDV4().String()}})
+
+	code, body := serveInbounds(t, http.MethodDelete, "/"+name+"/users/ALICE", "")
+	if code != http.StatusOK {
+		t.Fatalf("status = %d, body = %v", code, body)
+	}
+	users, _ := listener.GetInboundUsers(name)
+	if len(users) != 1 || users[0].Username != "bob" {
+		t.Fatalf("users = %+v, want only bob", users)
+	}
+}
+
+// S-3: PATCH finds the user by name without case, like POST.
+func TestPatchInboundUserCaseInsensitive(t *testing.T) {
+	name := "route-patch-case"
+	startRouteVless(t, name, []inbound.VlessUser{{Username: "alice", UUID: utils.NewUUIDV4().String()}})
+
+	newUUID := utils.NewUUIDV4().String()
+	code, body := serveInbounds(t, http.MethodPatch, "/"+name+"/users/ALICE", `{"uuid":"`+newUUID+`"}`)
+	if code != http.StatusOK {
+		t.Fatalf("status = %d, body = %v", code, body)
+	}
+	users, _ := listener.GetInboundUsers(name)
+	if len(users) != 1 || users[0].Username != "alice" || users[0].UUID != newUUID {
+		t.Fatalf("users = %+v", users)
+	}
+}

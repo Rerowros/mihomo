@@ -141,7 +141,8 @@ func patchInboundUser(w http.ResponseWriter, r *http.Request) {
 	change, err := listener.UpdateInboundUsers(name, func(users []C.InboundUser) ([]C.InboundUser, error) {
 		found := false
 		for i := range users {
-			if users[i].Username != username {
+			// Names are unique without case (checkVlessUsers), as in POST.
+			if !strings.EqualFold(users[i].Username, username) {
 				continue
 			}
 			found = true
@@ -182,7 +183,7 @@ func deleteInboundUser(w http.ResponseWriter, r *http.Request) {
 		kept := make([]C.InboundUser, 0, len(users))
 		found := false
 		for _, user := range users {
-			if user.Username == username {
+			if strings.EqualFold(user.Username, username) {
 				found = true
 				continue
 			}
