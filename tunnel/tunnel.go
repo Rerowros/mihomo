@@ -10,6 +10,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	stdatomic "sync/atomic"
 	"time"
 
 	"github.com/metacubex/mihomo/common/atomic"
@@ -431,6 +432,11 @@ func handleUDPConn(packet C.PacketAdapter) {
 	}
 	fixMetadata(metadata) // fix some metadata not set via metadata.SetRemoteAddr or metadata.SetRemoteAddress
 
+	if session := metadata.InSession; session != nil && session.Revoked() {
+		packet.Drop() // queued before its user was removed
+		return
+	}
+
 	if err := preHandleMetadata(metadata.Clone()); err != nil { // precheck without modify metadata
 		packet.Drop()
 		log.Debugln("[Metadata PreHandle] error: %s", err)
@@ -446,7 +452,24 @@ func handleUDPConn(packet C.PacketAdapter) {
 		return sender
 	})
 	if !loaded {
-		dial := func() (C.PacketConn, C.WriteBackProxy, error) {
+		dial := func() (_ C.PacketConn, _ C.WriteBackProxy, err error) {
+			// A user's limits count associations, not packets: the slot is
+			// taken here, once per new association, and is owned by its
+			// tracker; every error path below gives it back.
+			var admission *statistic.Admission
+			if key, ok := statistic.UserKeyOf(metadata); ok {
+				admission, err = statistic.DefaultLimitManager.Admit(key)
+				if err != nil {
+					warnUDPLimit(key, err)
+					return nil, nil, err
+				}
+				defer func() {
+					if err != nil {
+						admission.Release()
+					}
+				}()
+			}
+
 			originMetadata := metadata  // save origin metadata
 			metadata = metadata.Clone() // don't modify PacketAdapter's metadata
 
@@ -476,7 +499,10 @@ func handleUDPConn(packet C.PacketAdapter) {
 			}
 			logMetadata(metadata, rule, rawPc)
 
-			pc := statistic.NewUDPTracker(rawPc, statistic.DefaultManager, metadata, rule, 0, 0, true)
+			pc, err := statistic.NewUDPTrackerAdmitted(rawPc, statistic.DefaultManager, metadata, rule, 0, 0, true, admission)
+			if err != nil {
+				return nil, nil, err // its user was removed; the tracker is closed
+			}
 
 			sender.AddMapping(originMetadata, dialMetadata)
 			oAddrPort := dialMetadata.AddrPort()
@@ -499,6 +525,23 @@ func handleUDPConn(packet C.PacketAdapter) {
 	sender.Send(packet) // nonblocking
 }
 
+// udpLimitWarned keeps, per user, when a refused UDP association was last
+// logged at Warn: a client retries on every packet, so the log is limited to
+// one line a minute per user.
+var udpLimitWarned sync.Map // statistic.UserKey -> *atomic.Int64 (unix nanoseconds)
+
+func warnUDPLimit(key statistic.UserKey, err error) {
+	now := time.Now().UnixNano()
+	value, _ := udpLimitWarned.LoadOrStore(key, new(stdatomic.Int64))
+	last := value.(*stdatomic.Int64)
+	previous := last.Load()
+	if previous != 0 && now-previous < int64(time.Minute) || !last.CompareAndSwap(previous, now) {
+		log.Debugln("[Limit] inbound user %s/%s: UDP: %s", key.Inbound, key.User, err)
+		return
+	}
+	log.Warnln("[Limit] inbound user %s/%s: UDP: %s (repeats within a minute are logged at debug)", key.Inbound, key.User, err)
+}
+
 func handleTCPConn(connCtx C.ConnContext) {
 	if !isHandle(connCtx.Metadata().Type) {
 		_ = connCtx.Conn().Close()
@@ -515,6 +558,20 @@ func handleTCPConn(connCtx C.ConnContext) {
 		return
 	}
 	fixMetadata(metadata) // fix some metadata not set via metadata.SetRemoteAddr or metadata.SetRemoteAddress
+
+	if session := metadata.InSession; session != nil && session.Revoked() {
+		return
+	}
+	var admission *statistic.Admission
+	if key, ok := statistic.UserKeyOf(metadata); ok {
+		var err error
+		admission, err = statistic.DefaultLimitManager.Admit(key)
+		if err != nil {
+			log.Warnln("[Limit] inbound user %s/%s: %s", key.Inbound, key.User, err)
+			return
+		}
+		defer admission.Release() // the tracker owns it once created; Release is idempotent
+	}
 
 	preHandleFailed := false
 	if err := preHandleMetadata(metadata); err != nil {
@@ -612,7 +669,11 @@ func handleTCPConn(connCtx C.ConnContext) {
 	}
 	logMetadata(metadata, rule, remoteConn)
 
-	remoteConn = statistic.NewTCPTracker(remoteConn, statistic.DefaultManager, metadata, rule, int64(peekLen), 0, true)
+	tracker, err := statistic.NewTCPTrackerAdmitted(remoteConn, statistic.DefaultManager, metadata, rule, int64(peekLen), 0, true, admission)
+	if err != nil {
+		return // its user was removed; the tracker is closed
+	}
+	remoteConn = tracker
 	defer func(remoteConn C.Conn) {
 		_ = remoteConn.Close()
 	}(remoteConn)

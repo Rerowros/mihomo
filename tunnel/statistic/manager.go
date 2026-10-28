@@ -58,6 +58,24 @@ func (m *Manager) Range(f func(c Tracker) bool) {
 	})
 }
 
+// CloseByUser closes every tracked connection of one inbound user and returns
+// how many it closed. VLESS users do not need it: revoking a user closes the
+// client connections and trackers bound to its record (C.InboundSession).
+func (m *Manager) CloseByUser(inbound, user string) int {
+	var matched []Tracker
+	m.connections.Range(func(_ string, c Tracker) bool {
+		metadata := c.Info().Metadata
+		if metadata != nil && metadata.InName == inbound && metadata.InUser == user {
+			matched = append(matched, c)
+		}
+		return true
+	})
+	for _, c := range matched {
+		_ = c.Close()
+	}
+	return len(matched)
+}
+
 func (m *Manager) PushUploaded(size int64) {
 	m.uploadTemp.Add(size)
 	m.uploadTotal.Add(size)

@@ -24,7 +24,6 @@ import (
 	"github.com/metacubex/mihomo/transport/xhttp"
 
 	"github.com/metacubex/http"
-	"github.com/metacubex/sing/common"
 	"github.com/metacubex/sing/common/metadata"
 	"github.com/metacubex/tls"
 	"golang.org/x/exp/slices"
@@ -34,7 +33,7 @@ type Listener struct {
 	closed     bool
 	config     LC.VlessServer
 	listeners  []net.Listener
-	service    *Service[string]
+	service    *Service
 	decryption *encryption.ServerInstance
 }
 
@@ -55,17 +54,8 @@ func New(config LC.VlessServer, lc C.InboundListenConfig, tunnel C.Tunnel, addit
 		return nil, err
 	}
 
-	service := NewService[string](h)
-	service.UpdateUsers(
-		common.Map(config.Users, func(it LC.VlessUser) string {
-			return it.Username
-		}),
-		common.Map(config.Users, func(it LC.VlessUser) string {
-			return it.UUID
-		}),
-		common.Map(config.Users, func(it LC.VlessUser) string {
-			return it.Flow
-		}))
+	service := NewService(h)
+	service.UpdateUsers(config.Users)
 
 	sl = &Listener{config: config, service: service}
 
@@ -297,6 +287,18 @@ func New(config LC.VlessServer, lc C.InboundListenConfig, tunnel C.Tunnel, addit
 	}
 
 	return sl, nil
+}
+
+// UpdateUsers replaces the user table of the running listener: a new UUID is
+// accepted on the next handshake; a removed or re-keyed user is revoked and its
+// open connections are closed.
+func (l *Listener) UpdateUsers(users []LC.VlessUser) C.InboundUserChange {
+	return l.service.UpdateUsers(users)
+}
+
+// Users returns the current user table of the running listener.
+func (l *Listener) Users() []LC.VlessUser {
+	return l.service.Users()
 }
 
 func (l *Listener) Close() error {

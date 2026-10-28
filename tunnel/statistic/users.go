@@ -5,7 +5,18 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	C "github.com/metacubex/mihomo/constant"
 )
+
+// UserKeyOf returns the authenticated user of a connection, if it came from a
+// user-aware inbound. Internal hops (DNS, dialer-proxy) have no InUser.
+func UserKeyOf(metadata *C.Metadata) (UserKey, bool) {
+	if metadata == nil || metadata.InUser == "" {
+		return UserKey{}, false
+	}
+	return UserKey{Inbound: metadata.InName, User: metadata.InUser}, true
+}
 
 // UserKey identifies one user of one inbound. mihomo has no global user name
 // like Xray's email: the same person may use different names on different
@@ -84,6 +95,47 @@ type UserStat struct {
 	Download   int64  `json:"download"`
 	Conns      int64  `json:"conns"`
 	LastActive int64  `json:"lastActive"`
+}
+
+// ResetTraffic returns the counters and zeroes the requested directions in
+// one atomic step per counter, so a panel that reads uplink with reset does not
+// lose downlink.
+func (m *UserManager) ResetTraffic(inbound, user string, resetUpload, resetDownload bool) (upload, download int64, found bool) {
+	m.mu.RLock()
+	keys := make([]UserKey, 0, len(m.users))
+	for key := range m.users {
+		if inbound != "" && key.Inbound != inbound {
+			continue
+		}
+		if user != "" && key.User != user {
+			continue
+		}
+		keys = append(keys, key)
+	}
+	counters := make([]*userCounters, 0, len(keys))
+	for _, key := range keys {
+		if c := m.users[key]; c != nil {
+			counters = append(counters, c)
+		}
+	}
+	m.mu.RUnlock()
+
+	if len(counters) == 0 {
+		return 0, 0, false
+	}
+	for _, c := range counters {
+		if resetUpload {
+			upload += c.upload.Swap(0)
+		} else {
+			upload += c.upload.Load()
+		}
+		if resetDownload {
+			download += c.download.Swap(0)
+		} else {
+			download += c.download.Load()
+		}
+	}
+	return upload, download, true
 }
 
 // Snapshot returns the counters, optionally filtered by inbound and user. With
