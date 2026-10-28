@@ -51,20 +51,21 @@ func Current() Options {
 	return Options{}
 }
 
-// Live reports whether the tunnel is running: false while the configuration
-// is being (re)loaded, with the state as the reason.
+// Live answers the liveness probe: the process serves the controller, so it
+// is alive. The state of the tunnel is deliberately not part of it: a reload
+// of the configuration keeps the tunnel out of Running for as long as the
+// providers take to fetch (tens of seconds), and a liveness probe that failed
+// then would have the container restarted in the middle of every reload.
+// Readiness (Ready) reports the tunnel.
 func Live() (bool, string) {
-	if s := tunnel.Status(); s != tunnel.Running {
-		return false, s.String()
-	}
 	return true, ""
 }
 
-// Ready reports whether the configuration is applied and every listener of
-// the `listeners` section listens.
+// Ready reports whether the tunnel is running (false while the configuration
+// is being (re)loaded) and every listener of the `listeners` section listens.
 func Ready() (bool, string) {
-	if ok, reason := Live(); !ok {
-		return false, "tunnel " + reason
+	if s := tunnel.Status(); s != tunnel.Running {
+		return false, "tunnel " + s.String()
 	}
 	if n := listener.FailedInboundListeners(); n > 0 {
 		return false, "listeners failed to start"
@@ -171,9 +172,9 @@ func writeProcess(w writer) {
 
 	live, _ := Live()
 	ready, _ := Ready()
-	w.family("mihomo_live", "gauge", "1 when the tunnel is running (GET /healthz).")
+	w.family("mihomo_live", "gauge", "1 while the process answers (GET /healthz).")
 	w.int("mihomo_live", boolValue(live))
-	w.family("mihomo_ready", "gauge", "1 when the configuration is applied and every listener listens (GET /readyz).")
+	w.family("mihomo_ready", "gauge", "1 when the tunnel is running and every listener listens (GET /readyz).")
 	w.int("mihomo_ready", boolValue(ready))
 	w.family("mihomo_listeners_failed", "gauge", "Listeners of the configuration that failed to start.")
 	w.int("mihomo_listeners_failed", int64(listener.FailedInboundListeners()))

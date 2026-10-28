@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/metacubex/mihomo/tunnel/statistic"
 
@@ -218,4 +219,17 @@ func TestLabelEscaping(t *testing.T) {
 	samples := parse(t, buf.String())
 	require.Len(t, samples, 1)
 	assert.Equal(t, "q\"\\\n", samples[0].labels["l"])
+}
+
+// A user name with bytes that are not UTF-8 must not break the scrape:
+// Prometheus rejects the whole exposition on an invalid label value.
+func TestLabelInvalidUTF8(t *testing.T) {
+	var buf bytes.Buffer
+	bw := bufio.NewWriter(&buf)
+	w := newWriter(bw)
+	w.family("x_total", "counter", "x")
+	w.int("x_total", 1, "user", "a\xffb\xc3", "inbound", "ok\"\xfe")
+	require.NoError(t, bw.Flush())
+	assert.True(t, utf8.Valid(buf.Bytes()), "%q", buf.String())
+	assert.Equal(t, "# HELP x_total x\n# TYPE x_total counter\nx_total{user=\"a�b�\",inbound=\"ok\\\"�\"} 1\n", buf.String())
 }

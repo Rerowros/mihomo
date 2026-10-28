@@ -58,7 +58,10 @@ func (e writer) sample(name string, value []byte, labels ...string) {
 			}
 			e.w.WriteString(labels[i])
 			e.w.WriteString(`="`)
-			if v := labels[i+1]; strings.ContainsAny(v, "\\\"\n") {
+			// a label value must be UTF-8 or Prometheus rejects the whole
+			// scrape; names of users and inbounds come from the panel as is
+			v := strings.ToValidUTF8(labels[i+1], "\uFFFD")
+			if strings.ContainsAny(v, "\\\"\n") {
 				e.w.WriteString(labelEscaper.Replace(v))
 			} else {
 				e.w.WriteString(v)

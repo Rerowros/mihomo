@@ -72,6 +72,20 @@ func TestMetricsRoute(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, string(body), "# TYPE mihomo_upload_bytes_total counter\n")
 	assert.False(t, acceptsGzip("gzip;q=0"))
+	for _, header := range []string{"gzip;q=0.0", "gzip; q=0.00", "gzip;Q=0.000", "br, gzip ; q=0.0"} {
+		assert.False(t, acceptsGzip(header), "%q refuses gzip", header)
+	}
+	assert.True(t, acceptsGzip("gzip;q=0.001"))
+	assert.True(t, acceptsGzip("gzip"))
+
+	req = httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	req.Header.Set("Authorization", "Bearer "+testSecret)
+	req.Header.Set("Accept-Encoding", "gzip;q=0.0")
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.Empty(t, rec.Header().Get("Content-Encoding"), "gzip;q=0.0 is a refusal")
+	assert.Contains(t, rec.Body.String(), "# TYPE mihomo_upload_bytes_total counter\n")
 	assert.True(t, acceptsGzip("deflate, GZIP;q=0.5"))
 
 	// health-without-auth does not open /metrics
@@ -100,14 +114,16 @@ func TestHealthProbes(t *testing.T) {
 	// the rest of the API is still protected
 	assert.Equal(t, http.StatusUnauthorized, get(h, "/", "").Code)
 
+	// while the configuration (re)loads the process is alive, only not ready:
+	// a failing liveness probe would have the container restarted mid-reload
 	tunnel.OnSuspend()
-	rec := get(h, "/healthz", "")
+	assert.Equal(t, http.StatusOK, get(h, "/healthz", "").Code, "liveness ignores the tunnel")
+	rec := get(h, "/readyz", "")
 	assert.Equal(t, http.StatusServiceUnavailable, rec.Code)
-	assert.Equal(t, "suspend", strings.TrimSpace(rec.Body.String()))
-	assert.Equal(t, http.StatusServiceUnavailable, get(h, "/readyz", "").Code)
+	assert.Equal(t, "tunnel suspend", strings.TrimSpace(rec.Body.String()))
 
 	tunnel.OnInnerLoading()
-	assert.Equal(t, http.StatusServiceUnavailable, get(h, "/healthz", "").Code)
+	assert.Equal(t, http.StatusOK, get(h, "/healthz", "").Code, "liveness ignores the tunnel")
 	assert.Equal(t, http.StatusServiceUnavailable, get(h, "/readyz", "").Code)
 
 	tunnel.OnRunning()

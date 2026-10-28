@@ -2,6 +2,7 @@ package route
 
 import (
 	"compress/gzip"
+	"strconv"
 	"strings"
 
 	"github.com/metacubex/mihomo/hub/metrics"
@@ -41,8 +42,22 @@ func acceptsGzip(header string) bool {
 	for _, part := range strings.Split(header, ",") {
 		coding, params, _ := strings.Cut(strings.TrimSpace(part), ";")
 		if strings.EqualFold(strings.TrimSpace(coding), "gzip") {
-			return strings.ReplaceAll(strings.TrimSpace(params), " ", "") != "q=0"
+			return !zeroQuality(params)
 		}
+	}
+	return false
+}
+
+// zeroQuality reports whether the parameters of a coding carry q=0 (also
+// written q=0.0, q=0.000), which refuses the coding (RFC 9110, 12.4.2).
+func zeroQuality(params string) bool {
+	for _, p := range strings.Split(params, ";") {
+		name, value, ok := strings.Cut(strings.TrimSpace(p), "=")
+		if !ok || !strings.EqualFold(strings.TrimSpace(name), "q") {
+			continue
+		}
+		q, err := strconv.ParseFloat(strings.TrimSpace(value), 64)
+		return err == nil && q == 0
 	}
 	return false
 }
