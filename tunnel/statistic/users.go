@@ -127,7 +127,8 @@ type UserStat struct {
 	Download   int64  `json:"download"`
 	Conns      int64  `json:"conns"`
 	LastActive int64  `json:"lastActive"`
-	// IPs are the client addresses with open connections on this inbound.
+	// IPs are the client addresses with open connections on this inbound;
+	// only SnapshotWithIPs fills them.
 	IPs []UserIP `json:"ips,omitempty"`
 }
 
@@ -278,8 +279,19 @@ func (m *UserManager) Totals() []UserTotal {
 // Snapshot returns the counters, optionally filtered by inbound and user. With
 // reset, the traffic counters restart from zero, atomically with the read, so
 // a panel that polls and resets once a period neither loses nor counts a byte
-// twice (the analogue of Xray's QueryStats reset).
+// twice (the analogue of Xray's QueryStats reset). The IPs field stays empty:
+// the panel polls the traffic often and does not need the addresses, see
+// SnapshotWithIPs.
 func (m *UserManager) Snapshot(inbound, user string, reset bool) []UserStat {
+	return m.snapshot(inbound, user, reset, false)
+}
+
+// SnapshotWithIPs is Snapshot with the online addresses of every user.
+func (m *UserManager) SnapshotWithIPs(inbound, user string, reset bool) []UserStat {
+	return m.snapshot(inbound, user, reset, true)
+}
+
+func (m *UserManager) snapshot(inbound, user string, reset, withIPs bool) []UserStat {
 	m.mu.RLock()
 	keys := make([]UserKey, 0, len(m.users))
 	for key := range m.users {
@@ -318,15 +330,18 @@ func (m *UserManager) Snapshot(inbound, user string, reset bool) []UserStat {
 			upload = counters.drainUp()
 			download = counters.drainDown()
 		}
-		stats = append(stats, UserStat{
+		stat := UserStat{
 			Inbound:    key.Inbound,
 			User:       key.User,
 			Upload:     upload,
 			Download:   download,
 			Conns:      counters.conns.Load(),
 			LastActive: counters.lastActive.Load(),
-			IPs:        m.OnlineIPs(key.Inbound, key.User),
-		})
+		}
+		if withIPs {
+			stat.IPs = m.OnlineIPs(key.Inbound, key.User)
+		}
+		stats = append(stats, stat)
 	}
 	return stats
 }

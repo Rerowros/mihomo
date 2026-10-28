@@ -387,3 +387,36 @@ func TestRevokedReleaseKeepsSharedEntry(t *testing.T) {
 	_, err = m.AdmitFrom(key, addr("198.51.100.2"))
 	require.ErrorIs(t, err, ErrUserMaxIPs, "a revoked connection ended the window of a live one")
 }
+
+// Snapshot, which QueryStats and the Xray counters poll, never touches the
+// address sets: it completes while the set of the user is locked. Only
+// SnapshotWithIPs (GET /traffic/users) reads them.
+func TestSnapshotSkipsIPs(t *testing.T) {
+	m := newIPLimitManager()
+	users := m.userManager()
+	key := UserKey{Inbound: "in", User: "u"}
+	users.Open(key)
+	defer users.Close(key)
+	a, err := m.AdmitFrom(key, addr("198.51.100.1"))
+	require.NoError(t, err)
+	defer a.Release()
+
+	set := users.ipSet("u", false)
+	set.mu.Lock()
+	done := make(chan []UserStat, 1)
+	go func() { done <- users.Snapshot("", "", false) }()
+	select {
+	case stats := <-done:
+		require.Len(t, stats, 1)
+		assert.Nil(t, stats[0].IPs)
+	case <-time.After(2 * time.Second):
+		set.mu.Unlock()
+		t.Fatal("Snapshot read the address set")
+	}
+	set.mu.Unlock()
+
+	stats := users.SnapshotWithIPs("", "", false)
+	require.Len(t, stats, 1)
+	require.Len(t, stats[0].IPs, 1)
+	assert.Equal(t, "198.51.100.1", stats[0].IPs[0].IP)
+}

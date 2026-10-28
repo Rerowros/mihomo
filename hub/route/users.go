@@ -16,7 +16,7 @@ import (
 // Xray's QueryStats reset.
 func trafficUsers(w http.ResponseWriter, r *http.Request) {
 	query := r.URL.Query()
-	render.JSON(w, r, statistic.DefaultUserManager.Snapshot(
+	render.JSON(w, r, statistic.DefaultUserManager.SnapshotWithIPs(
 		query.Get("inbound"),
 		query.Get("user"),
 		query.Get("reset") == "true",
