@@ -84,7 +84,10 @@ func New(config LC.VlessServer, lc C.InboundListenConfig, tunnel C.Tunnel, addit
 
 	httpServer := http.Server{
 		IdleTimeout: 30 * time.Second,
-		Protocols:   new(http.Protocols),
+		// bounds the TLS handshake and the request header of ws/grpc/xhttp
+		// before the conn reaches HandleConn and its own handshake deadline
+		ReadHeaderTimeout: handshakeTimeout,
+		Protocols:         new(http.Protocols),
 	}
 	tlsConfig := &tls.Config{Time: ntp.Now}
 	var shadowTLSBuilder *shadowtls.Builder
@@ -327,6 +330,9 @@ func (l *Listener) AddrList() (addrList []net.Addr) {
 
 func (l *Listener) HandleConn(conn net.Conn, tunnel C.Tunnel, additions ...inbound.Addition) {
 	ctx := sing.WithAdditions(context.TODO(), additions...)
+	// cleared by NewConnection once the request header is read and the user
+	// is authenticated
+	setHandshakeDeadline(conn)
 	if l.decryption != nil {
 		c, err := l.decryption.Handshake(conn, nil)
 		if err != nil {

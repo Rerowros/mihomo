@@ -80,7 +80,10 @@ func New(config LC.TrojanServer, lc C.InboundListenConfig, tunnel C.Tunnel, addi
 
 	httpServer := http.Server{
 		IdleTimeout: 30 * time.Second,
-		Protocols:   new(http.Protocols),
+		// bounds the TLS handshake and the request header of ws/grpc/xhttp
+		// before the conn reaches HandleConn and its own handshake deadline
+		ReadHeaderTimeout: handshakeTimeout,
+		Protocols:         new(http.Protocols),
 	}
 	tlsConfig := &tls.Config{Time: ntp.Now}
 	var shadowTLSBuilder *shadowtls.Builder
@@ -265,6 +268,8 @@ func (l *Listener) AddrList() (addrList []net.Addr) {
 func (l *Listener) HandleConn(conn net.Conn, tunnel C.Tunnel, additions ...inbound.Addition) {
 	defer conn.Close()
 
+	// cleared by handleConn once the request header is read
+	setHandshakeDeadline(conn)
 	if l.pickCipher != nil {
 		conn = l.pickCipher.StreamConn(conn)
 	}
@@ -321,6 +326,8 @@ func (l *Listener) handleConn(inMux bool, conn net.Conn, tunnel C.Tunnel, additi
 			//log.Warnln("read crlf error: %s", err.Error())
 			return
 		}
+		// the header is read: lift the handshake deadline set by HandleConn
+		clearHandshakeDeadline(conn)
 	}
 
 	switch command {
