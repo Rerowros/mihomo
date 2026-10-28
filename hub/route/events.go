@@ -104,6 +104,8 @@ func getEvents(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Accel-Buffering", "no")
 		w.WriteHeader(http.StatusOK)
 		flusher.Flush()
+		// A client that stopped reading must not hold a stream slot forever.
+		rc := http.NewResponseController(w)
 		write = func(e eventbus.Event) error {
 			buf, err := json.Marshal(e)
 			if err != nil {
@@ -114,6 +116,7 @@ func getEvents(w http.ResponseWriter, r *http.Request) {
 			} else {
 				buf = append(buf, '\n')
 			}
+			_ = rc.SetWriteDeadline(time.Now().Add(10 * time.Second))
 			if _, err = w.Write(buf); err != nil {
 				return err
 			}
@@ -125,6 +128,7 @@ func getEvents(w http.ResponseWriter, r *http.Request) {
 			keepAlive = []byte(":\n\n") // an SSE comment
 		}
 		heartbeat = func() error {
+			_ = rc.SetWriteDeadline(time.Now().Add(10 * time.Second))
 			if _, err := w.Write(keepAlive); err != nil {
 				return err
 			}
