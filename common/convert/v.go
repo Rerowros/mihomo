@@ -7,6 +7,8 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+
+	"github.com/metacubex/mihomo/component/fragment"
 )
 
 func handleVShareLink(names map[string]int, url *url.URL, scheme string, proxy map[string]any) error {
@@ -464,8 +466,33 @@ func fragmentOptsFromFinalMask(fm string) map[string]any {
 				opts[name] = strconv.FormatInt(int64(v), 10)
 			}
 		}
+		// per-piece lists are not supported: take their first entry
+		for key, name := range map[string]string{"lengths": "length", "delays": "delay"} {
+			var list []json.RawMessage
+			if _, ok := opts[name]; ok || json.Unmarshal(mask.Settings[key], &list) != nil || len(list) == 0 {
+				continue
+			}
+			var value any
+			if json.Unmarshal(list[0], &value) == nil {
+				switch v := value.(type) {
+				case string:
+					opts[name] = v
+				case float64:
+					opts[name] = strconv.FormatInt(int64(v), 10)
+				}
+			}
+		}
 		if len(opts) == 0 {
 			opts["packets"] = "tlshello"
+		}
+		// one bad link must not fail the whole subscription
+		check := fragment.Options{}
+		check.Packets, _ = opts["packets"].(string)
+		check.Length, _ = opts["length"].(string)
+		check.Delay, _ = opts["delay"].(string)
+		check.MaxSplit, _ = opts["max-split"].(string)
+		if _, err := check.Parse(); err != nil {
+			return nil
 		}
 		return opts
 	}

@@ -21,6 +21,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"net"
 	"strconv"
 	"strings"
@@ -75,7 +76,10 @@ func parseRange(name, s, fallback string) (rng, error) {
 			return rng{}, fmt.Errorf("fragment-opts.%s: invalid range %q", name, s)
 		}
 	}
-	if minVal < 0 || maxVal < minVal {
+	if maxVal < minVal { // Xray swaps a reversed range too
+		minVal, maxVal = maxVal, minVal
+	}
+	if minVal < 0 || maxVal > math.MaxInt32 {
 		return rng{}, fmt.Errorf("fragment-opts.%s: invalid range %q", name, s)
 	}
 	return rng{minVal, maxVal}, nil

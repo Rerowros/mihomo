@@ -129,6 +129,9 @@ func TestBPNFragmentParse(t *testing.T) {
 	require.Equal(t, rng{2, 4}, c.delay)
 	require.Equal(t, rng{8, 8}, c.maxSplit)
 
+	c = mustParse(t, Options{Length: "20-10"}) // reversed, swapped like Xray
+	require.Equal(t, rng{10, 20}, c.length)
+
 	c = mustParse(t, Options{Delay: "5"}) // packets and length default to tlshello / 10-20
 	require.True(t, c.tlsHello)
 	require.Equal(t, rng{10, 20}, c.length)
@@ -137,7 +140,8 @@ func TestBPNFragmentParse(t *testing.T) {
 		{Packets: "0-1"},
 		{Packets: "abc"},
 		{Length: "0-5"},
-		{Length: "20-10"},
+		{Delay: "0-9223372036854775807"},
+		{MaxSplit: "0-2147483648"},
 		{Delay: "-1"},
 		{MaxSplit: "x"},
 	} {
