@@ -12,6 +12,7 @@ import (
 	N "github.com/metacubex/mihomo/common/net"
 	"github.com/metacubex/mihomo/common/utils"
 	"github.com/metacubex/mihomo/component/dialer"
+	"github.com/metacubex/mihomo/component/fragment"
 	"github.com/metacubex/mihomo/component/proxydialer"
 	"github.com/metacubex/mihomo/component/resolver"
 	C "github.com/metacubex/mihomo/constant"
@@ -198,6 +199,9 @@ type BasicOption struct {
 	IPVersion   C.DNSPrefer `proxy:"ip-version,omitempty"`
 	DialerProxy string      `proxy:"dialer-proxy,omitempty"` // don't apply this option into groups, but can set a group name in a proxy
 
+	// BadVPN P19: split the first TLS ClientHello of every TCP connection of this proxy (off when empty)
+	FragmentOpts fragment.Options `proxy:"fragment-opts,omitempty"`
+
 	//
 	// The following parameters are used internally, assign value by the structure decoder are disallowed
 	//
@@ -214,6 +218,10 @@ func (b *BasicOption) NewDialer(opts []dialer.Option) C.Dialer {
 		} else {
 			cDialer = dialer.NewDialer(opts...)
 		}
+	}
+	// ParseProxy has already rejected an invalid block, so the error is not expected here
+	if fragmentConfig, err := b.FragmentOpts.Parse(); err == nil {
+		cDialer = fragment.NewDialer(cDialer, fragmentConfig)
 	}
 	return cDialer
 }

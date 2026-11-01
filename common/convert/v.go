@@ -55,6 +55,10 @@ func handleVShareLink(names map[string]int, url *url.URL, scheme string, proxy m
 		}
 		proxy["reality-opts"] = realityOpts
 	}
+	// BadVPN P19: Xray finalmask TCP "fragment" from the fm parameter
+	if fragmentOpts := fragmentOptsFromFinalMask(query.Get("fm")); fragmentOpts != nil {
+		proxy["fragment-opts"] = fragmentOpts
+	}
 
 	switch query.Get("packetEncoding") {
 	case "none":
@@ -421,4 +425,49 @@ func splitHysteria2Ports(line string) (string, string) {
 		return line, ""
 	}
 	return head + userinfo + host + ":" + first + tail, ports
+}
+
+// fragmentOptsFromFinalMask maps the first TCP "fragment" mask of an Xray fm
+// parameter, {"tcp":[{"type":"fragment","settings":{"packets":"tlshello",
+// "length":"10-20","delay":"0"}}]}, to fragment-opts. Other masks are ignored.
+func fragmentOptsFromFinalMask(fm string) map[string]any {
+	if fm == "" {
+		return nil
+	}
+	var finalMask struct {
+		TCP []struct {
+			Type     string                     `json:"type"`
+			Settings map[string]json.RawMessage `json:"settings"`
+		} `json:"tcp"`
+	}
+	if err := json.Unmarshal([]byte(fm), &finalMask); err != nil {
+		return nil
+	}
+	for _, mask := range finalMask.TCP {
+		if !strings.EqualFold(mask.Type, "fragment") {
+			continue
+		}
+		opts := map[string]any{}
+		for key, name := range map[string]string{"packets": "packets", "length": "length", "delay": "delay", "maxSplit": "max-split"} {
+			raw, ok := mask.Settings[key]
+			if !ok {
+				continue
+			}
+			var value any
+			if err := json.Unmarshal(raw, &value); err != nil {
+				continue
+			}
+			switch v := value.(type) {
+			case string:
+				opts[name] = v
+			case float64:
+				opts[name] = strconv.FormatInt(int64(v), 10)
+			}
+		}
+		if len(opts) == 0 {
+			opts["packets"] = "tlshello"
+		}
+		return opts
+	}
+	return nil
 }
