@@ -56,7 +56,7 @@ func New(config LC.Hysteria2RealmServer, lc C.InboundListenConfig, tunnel C.Tunn
 		realmIDPattern: pat,
 	})
 
-	tlsConfig := &tls.Config{Time: ntp.Now}
+	tlsConfig := &tls.Config{Time: ntp.Now, MinVersion: tls.VersionTLS12}
 	if config.Certificate != "" && config.PrivateKey != "" {
 		certLoader, err := ca.NewTLSKeyPairLoader(config.Certificate, config.PrivateKey)
 		if err != nil {
