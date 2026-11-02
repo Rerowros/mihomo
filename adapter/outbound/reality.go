@@ -20,6 +20,13 @@ type RealityOptions struct {
 	// needs ML-KEM (Xray >= 26.9.8) from the handshake outcome (P6).
 	SupportX25519MLKEM768 bool `proxy:"support-x25519mlkem768,omitempty"`
 
+	// MLKEMClientFingerprint (BadVPN P7) replaces client-fingerprint for a
+	// handshake that offers X25519MLKEM768. Russian mobile carriers hold a
+	// Chrome ClientHello to a suspicious foreign subnet and pass Firefox/
+	// Android/OkHttp/Edge (XTLS/Xray-core#6293); firefox is the passing
+	// fingerprint that also carries the ML-KEM key share.
+	MLKEMClientFingerprint string `proxy:"mlkem-client-fingerprint,omitempty"`
+
 	// ClientVersion overrides the "x.y.z" version reported to the server
 	// (default tlsC.DefaultRealityClientVersion).
 	ClientVersion string `proxy:"client-version,omitempty"`
@@ -47,6 +54,17 @@ func (o RealityOptions) Parse() (*tlsC.RealityConfig, error) {
 		n, err = hex.Decode(config.ShortID[:], []byte(o.ShortID))
 		if err != nil || n > tlsC.RealityMaxShortIDLen {
 			return nil, errors.New("invalid REALITY short ID")
+		}
+
+		if o.MLKEMClientFingerprint != "" {
+			fingerprint, ok := tlsC.GetFingerprint(o.MLKEMClientFingerprint)
+			if !ok {
+				return nil, fmt.Errorf("invalid mlkem-client-fingerprint %q", o.MLKEMClientFingerprint)
+			}
+			if !tlsC.FingerprintSupportsX25519MLKEM768(fingerprint) {
+				return nil, fmt.Errorf("mlkem-client-fingerprint %q has no X25519MLKEM768 key share", o.MLKEMClientFingerprint)
+			}
+			config.MLKEMFingerprint = &fingerprint
 		}
 
 		if o.ClientVersion != "" {

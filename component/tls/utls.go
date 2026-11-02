@@ -39,6 +39,29 @@ func NewListener(inner net.Listener, config *Config) net.Listener {
 	return utls.NewListener(inner, config)
 }
 
+// FingerprintSupportsX25519MLKEM768 reports whether the ClientHello of the
+// fingerprint carries the hybrid X25519MLKEM768 key share. Xray servers from
+// 26.9.8 on reject a hello without it, and a fingerprint without the share
+// cannot be used for a REALITY handshake that must offer ML-KEM.
+func FingerprintSupportsX25519MLKEM768(id UClientHelloID) bool {
+	spec, err := utls.UTLSIdToSpec(id)
+	if err != nil {
+		return false
+	}
+	for _, extension := range spec.Extensions {
+		keyShare, ok := extension.(*utls.KeyShareExtension)
+		if !ok {
+			continue
+		}
+		for _, share := range keyShare.KeyShares {
+			if share.Group == utls.X25519MLKEM768 {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func GetFingerprint(clientFingerprint string) (UClientHelloID, bool) {
 	if len(clientFingerprint) == 0 || clientFingerprint == "none" {
 		return UClientHelloID{}, false

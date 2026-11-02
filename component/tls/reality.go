@@ -37,9 +37,16 @@ const RealityMaxShortIDLen = 8
 type RealityClientVersion [3]byte
 
 // DefaultRealityClientVersion is reported when reality-opts.client-version is
-// not set. It represents the tested REALITY compatibility (Xray-core 26.3.27),
-// not Mihomo's application version.
-var DefaultRealityClientVersion = RealityClientVersion{26, 3, 27}
+// not set. It represents the tested REALITY compatibility, not Mihomo's
+// application version.
+//
+// Xray-core REALITY servers compare this against minClientVer. Nodes on Xray
+// >= 26.9.8 set minClientVer to 26.9.8 or newer (and such a server rejects a
+// ClientHello without X25519MLKEM768 at all, XTLS/REALITY 8cdf7bf), so the old
+// 26.3.27 default failed every handshake to a refreshed node. 26.10.21 is the
+// newest release tested with this core; older servers do not set maxClientVer,
+// so a newer version is accepted by them.
+var DefaultRealityClientVersion = RealityClientVersion{26, 10, 21}
 
 // ParseRealityClientVersion parses "x.y.z" (each part 0-255).
 func ParseRealityClientVersion(s string) (RealityClientVersion, error) {
@@ -64,8 +71,28 @@ type RealityConfig struct {
 
 	SupportX25519MLKEM768 bool
 
+	// MLKEMFingerprint replaces the configured client fingerprint for a
+	// handshake that offers X25519MLKEM768 (BadVPN P7). Russian mobile carriers
+	// hold a Chrome ClientHello to a "suspicious" foreign subnet and pass
+	// Firefox/Android/OkHttp/Edge (XTLS/Xray-core#6293), while only chrome,
+	// firefox and safari fingerprints carry the ML-KEM key share. A node that
+	// requires ML-KEM can therefore keep client-fingerprint: chrome for other
+	// networks and set mlkem-client-fingerprint: firefox for these carriers.
+	// Nil keeps the configured fingerprint.
+	MLKEMFingerprint *UClientHelloID
+
 	// ClientVersion is reported in the session ID; zero value means DefaultRealityClientVersion.
 	ClientVersion RealityClientVersion
+}
+
+// realityFingerprint picks the ClientHello to send. With X25519MLKEM768 in the
+// handshake an explicit mlkem-client-fingerprint wins; otherwise the configured
+// fingerprint is used.
+func realityFingerprint(useMLKEM bool, fingerprint UClientHelloID, config *RealityConfig) UClientHelloID {
+	if useMLKEM && config.MLKEMFingerprint != nil {
+		return *config.MLKEMFingerprint
+	}
+	return fingerprint
 }
 
 // BadVPN P6: adaptive X25519MLKEM768. Xray servers are split by generation:
@@ -165,6 +192,11 @@ func GetRealityConn(ctx context.Context, conn net.Conn, fingerprint UClientHello
 			realityReportMLKEM(memoKey, useMLKEM, ok, conn.RemoteAddr())
 		}
 	}
+	// Pick the ML-KEM fingerprint once, before the retry loop: the loop below
+	// substitutes chrome for a fingerprint without the hybrid key share and
+	// retries, and applying the configured ML-KEM fingerprint on every
+	// iteration would undo that and loop forever.
+	fingerprint = realityFingerprint(useMLKEM, fingerprint, realityConfig)
 	for retry := 0; ; retry++ {
 		verifier := &realityVerifier{
 			serverName: serverName,
