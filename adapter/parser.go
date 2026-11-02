@@ -6,6 +6,7 @@ import (
 
 	"github.com/metacubex/mihomo/adapter/outbound"
 	"github.com/metacubex/mihomo/common/structure"
+	"github.com/metacubex/mihomo/component/fragment"
 	C "github.com/metacubex/mihomo/constant"
 	"github.com/metacubex/mihomo/transport/vless"
 )
@@ -15,6 +16,17 @@ func ParseProxy(mapping map[string]any, options ...ProxyOption) (C.Proxy, error)
 	proxyType, existType := mapping["type"].(string)
 	if !existType {
 		return nil, fmt.Errorf("missing type")
+	}
+
+	// BadVPN P19: reject an invalid fragment-opts block at load time, not on every dial
+	var fragmentOption struct {
+		FragmentOpts fragment.Options `proxy:"fragment-opts,omitempty"`
+	}
+	if err := decoder.Decode(mapping, &fragmentOption); err != nil {
+		return nil, err
+	}
+	if _, err := fragmentOption.FragmentOpts.Parse(); err != nil {
+		return nil, err
 	}
 
 	opt := applyProxyOptions(options...)

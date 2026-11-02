@@ -7,6 +7,8 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+
+	"github.com/metacubex/mihomo/component/fragment"
 )
 
 func handleVShareLink(names map[string]int, url *url.URL, scheme string, proxy map[string]any) error {
@@ -54,6 +56,10 @@ func handleVShareLink(names map[string]int, url *url.URL, scheme string, proxy m
 			}
 		}
 		proxy["reality-opts"] = realityOpts
+	}
+	// BadVPN P19: Xray finalmask TCP "fragment" from the fm parameter
+	if fragmentOpts := fragmentOptsFromFinalMask(query.Get("fm")); fragmentOpts != nil {
+		proxy["fragment-opts"] = fragmentOpts
 	}
 
 	switch query.Get("packetEncoding") {
@@ -421,4 +427,74 @@ func splitHysteria2Ports(line string) (string, string) {
 		return line, ""
 	}
 	return head + userinfo + host + ":" + first + tail, ports
+}
+
+// fragmentOptsFromFinalMask maps the first TCP "fragment" mask of an Xray fm
+// parameter, {"tcp":[{"type":"fragment","settings":{"packets":"tlshello",
+// "length":"10-20","delay":"0"}}]}, to fragment-opts. Other masks are ignored.
+func fragmentOptsFromFinalMask(fm string) map[string]any {
+	if fm == "" {
+		return nil
+	}
+	var finalMask struct {
+		TCP []struct {
+			Type     string                     `json:"type"`
+			Settings map[string]json.RawMessage `json:"settings"`
+		} `json:"tcp"`
+	}
+	if err := json.Unmarshal([]byte(fm), &finalMask); err != nil {
+		return nil
+	}
+	for _, mask := range finalMask.TCP {
+		if !strings.EqualFold(mask.Type, "fragment") {
+			continue
+		}
+		opts := map[string]any{}
+		for key, name := range map[string]string{"packets": "packets", "length": "length", "delay": "delay", "maxSplit": "max-split"} {
+			raw, ok := mask.Settings[key]
+			if !ok {
+				continue
+			}
+			var value any
+			if err := json.Unmarshal(raw, &value); err != nil {
+				continue
+			}
+			switch v := value.(type) {
+			case string:
+				opts[name] = v
+			case float64:
+				opts[name] = strconv.FormatInt(int64(v), 10)
+			}
+		}
+		// per-piece lists are not supported: take their first entry
+		for key, name := range map[string]string{"lengths": "length", "delays": "delay"} {
+			var list []json.RawMessage
+			if _, ok := opts[name]; ok || json.Unmarshal(mask.Settings[key], &list) != nil || len(list) == 0 {
+				continue
+			}
+			var value any
+			if json.Unmarshal(list[0], &value) == nil {
+				switch v := value.(type) {
+				case string:
+					opts[name] = v
+				case float64:
+					opts[name] = strconv.FormatInt(int64(v), 10)
+				}
+			}
+		}
+		if len(opts) == 0 {
+			opts["packets"] = "tlshello"
+		}
+		// one bad link must not fail the whole subscription
+		check := fragment.Options{}
+		check.Packets, _ = opts["packets"].(string)
+		check.Length, _ = opts["length"].(string)
+		check.Delay, _ = opts["delay"].(string)
+		check.MaxSplit, _ = opts["max-split"].(string)
+		if _, err := check.Parse(); err != nil {
+			return nil
+		}
+		return opts
+	}
+	return nil
 }
