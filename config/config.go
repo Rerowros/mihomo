@@ -7,6 +7,7 @@ import (
 	"net/netip"
 	"net/url"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 	_ "unsafe"
@@ -40,6 +41,7 @@ import (
 	RP "github.com/metacubex/mihomo/rules/provider"
 	RW "github.com/metacubex/mihomo/rules/wrapper"
 	T "github.com/metacubex/mihomo/tunnel"
+	"github.com/metacubex/mihomo/tunnel/statistic"
 
 	"golang.org/x/exp/slices"
 )
@@ -204,6 +206,9 @@ type Config struct {
 	Rules         []C.Rule
 	SubRules      map[string][]C.Rule
 	Users         []auth.AuthUser
+	UserLimits    []statistic.UserLimit
+	XrayAPI       *XrayAPI
+	Metrics       *Metrics
 	Proxies       map[string]C.Proxy
 	Listeners     map[string]C.InboundListener
 	Providers     map[string]P.ProxyProvider
@@ -401,6 +406,83 @@ type RawTLS struct {
 	CustomTrustCert []string `yaml:"custom-certifactes" json:"custom-certifactes"`
 }
 
+// XrayAPI configures the Xray-compatible gRPC endpoint panels talk to.
+type XrayAPI struct {
+	Listen string `yaml:"listen" json:"listen"`
+}
+
+type RawXrayAPI struct {
+	Listen string `yaml:"listen" json:"listen"`
+}
+
+// Metrics is the `metrics` section and `health-without-auth`.
+type Metrics struct {
+	// Enable serves GET /metrics on the controller.
+	Enable bool `json:"enable"`
+	// PerUser adds the series of every inbound user (high cardinality).
+	PerUser bool `json:"per-user"`
+	// HealthWithoutAuth serves GET /healthz and GET /readyz without the
+	// controller secret.
+	HealthWithoutAuth bool `json:"health-without-auth"`
+}
+
+type RawMetrics struct {
+	Enable  bool `yaml:"enable" json:"enable"`
+	PerUser bool `yaml:"per-user" json:"per-user"`
+}
+
+// RawUserLimit is the YAML/JSON form of one per-user limit.
+type RawUserLimit struct {
+	Inbound  string `yaml:"inbound" json:"inbound"`
+	User     string `yaml:"user" json:"user"`
+	MaxConns int    `yaml:"max-conns,omitempty" json:"max-conns,omitempty"`
+	// MaxIPs limits the client addresses of the user name on all inbounds;
+	// not safe behind a CDN or a proxy without the PROXY protocol, where all
+	// clients share one address. 0 means no limit.
+	MaxIPs   int    `yaml:"max-ips,omitempty" json:"max-ips,omitempty"`
+	UpBps    int64  `yaml:"up-bps,omitempty" json:"up-bps,omitempty"`
+	DownBps  int64  `yaml:"down-bps,omitempty" json:"down-bps,omitempty"`
+	Quota    int64  `yaml:"quota,omitempty" json:"quota,omitempty"`
+	ExpireAt string `yaml:"expire-at,omitempty" json:"expire-at,omitempty"`
+}
+
+func (r RawUserLimit) Build() (statistic.UserLimit, error) {
+	limit := statistic.UserLimit{
+		Inbound:  r.Inbound,
+		User:     r.User,
+		MaxConns: r.MaxConns,
+		MaxIPs:   r.MaxIPs,
+		UpBps:    r.UpBps,
+		DownBps:  r.DownBps,
+		Quota:    r.Quota,
+	}
+	if r.ExpireAt != "" {
+		if nanos, err := strconv.ParseInt(r.ExpireAt, 10, 64); err == nil {
+			limit.ExpireAt = nanos
+		} else if t, err := time.Parse(time.RFC3339, r.ExpireAt); err == nil {
+			limit.ExpireAt = t.Unix()
+		} else {
+			return statistic.UserLimit{}, fmt.Errorf("invalid user-limits expire-at %q: want unix seconds or RFC3339", r.ExpireAt)
+		}
+	}
+	return limit, nil
+}
+
+func parseUserLimits(raw []RawUserLimit) ([]statistic.UserLimit, error) {
+	limits := make([]statistic.UserLimit, 0, len(raw))
+	for _, item := range raw {
+		if item.Inbound == "" || item.User == "" {
+			return nil, fmt.Errorf("user-limits: inbound and user are required")
+		}
+		limit, err := item.Build()
+		if err != nil {
+			return nil, err
+		}
+		limits = append(limits, limit)
+	}
+	return limits, nil
+}
+
 type RawConfig struct {
 	Port                          int                     `yaml:"port" json:"port"`
 	SocksPort                     int                     `yaml:"socks-port" json:"socks-port"`
@@ -441,6 +523,7 @@ type RawConfig struct {
 	GeodataLoader                 string                  `yaml:"geodata-loader" json:"geodata-loader"`
 	GeositeMatcher                string                  `yaml:"geosite-matcher" json:"geosite-matcher"`
 	TCPConcurrent                 bool                    `yaml:"tcp-concurrent" json:"tcp-concurrent"`
+	HealthWithoutAuth             bool                    `yaml:"health-without-auth" json:"health-without-auth"`
 	FindProcessMode               process.FindProcessMode `yaml:"find-process-mode" json:"find-process-mode"`
 	GlobalClientFingerprint       string                  `yaml:"global-client-fingerprint" json:"global-client-fingerprint"`
 	GlobalUA                      string                  `yaml:"global-ua" json:"global-ua"`
@@ -456,6 +539,9 @@ type RawConfig struct {
 	Rule          []string                  `yaml:"rules" json:"rule"`
 	SubRules      map[string][]string       `yaml:"sub-rules" json:"sub-rules"`
 	Listeners     []map[string]any          `yaml:"listeners" json:"listeners"`
+	UserLimits    []RawUserLimit            `yaml:"user-limits" json:"user-limits"`
+	XrayAPI       RawXrayAPI                `yaml:"xray-api" json:"xray-api"`
+	Metrics       RawMetrics                `yaml:"metrics" json:"metrics"`
 	Hosts         map[string]any            `yaml:"hosts" json:"hosts"`
 	DNS           RawDNS                    `yaml:"dns" json:"dns"`
 	NTP           RawNTP                    `yaml:"ntp" json:"ntp"`
@@ -687,6 +773,18 @@ func ParseRawConfig(rawCfg *RawConfig) (*Config, error) {
 		return nil, err
 	}
 	config.Listeners = listeners
+
+	userLimits, err := parseUserLimits(rawCfg.UserLimits)
+	if err != nil {
+		return nil, err
+	}
+	config.UserLimits = userLimits
+	config.XrayAPI = &XrayAPI{Listen: rawCfg.XrayAPI.Listen}
+	config.Metrics = &Metrics{
+		Enable:            rawCfg.Metrics.Enable,
+		PerUser:           rawCfg.Metrics.PerUser,
+		HealthWithoutAuth: rawCfg.HealthWithoutAuth,
+	}
 
 	log.Infoln("Geodata Loader mode: %s", geodata.LoaderName())
 	log.Infoln("Geosite Matcher implementation: %s", geodata.SiteMatcherName())

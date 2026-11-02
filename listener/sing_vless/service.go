@@ -7,8 +7,14 @@ import (
 	"encoding/binary"
 	"io"
 	"net"
+	"sort"
+	"sync"
+	"sync/atomic"
 
 	"github.com/metacubex/mihomo/common/utils"
+	C "github.com/metacubex/mihomo/constant"
+	LC "github.com/metacubex/mihomo/listener/config"
+	"github.com/metacubex/mihomo/listener/sing"
 	"github.com/metacubex/mihomo/transport/vless"
 	"github.com/metacubex/mihomo/transport/vless/vision"
 
@@ -23,9 +29,73 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-type Service[T comparable] struct {
-	userMap  map[[16]byte]T
-	userFlow map[T]string
+// userEntry is the record of one user. A record that stays the same across
+// table updates keeps its sessions; a removed or re-keyed one is revoked and
+// closes every connection bound to it. Bind and revoke take entry.mu, so a
+// connection either binds before the revocation (and is closed by it) or sees
+// it (and is dropped): no connection of a removed user slips through.
+type userEntry struct {
+	name string
+	flow string
+
+	revoked  atomic.Bool
+	mu       sync.Mutex
+	sessions map[*boundSession]struct{}
+}
+
+type boundSession struct {
+	closer  io.Closer
+	tracked bool
+}
+
+var _ C.InboundSession = (*userEntry)(nil)
+
+func (e *userEntry) Revoked() bool {
+	return e.revoked.Load()
+}
+
+func (e *userEntry) Bind(c io.Closer, tracked bool) (release func(), ok bool) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.revoked.Load() {
+		return func() {}, false
+	}
+	session := &boundSession{closer: c, tracked: tracked}
+	if e.sessions == nil {
+		e.sessions = make(map[*boundSession]struct{})
+	}
+	e.sessions[session] = struct{}{}
+	return func() {
+		e.mu.Lock()
+		delete(e.sessions, session)
+		e.mu.Unlock()
+	}, true
+}
+
+// revoke marks the record removed and returns the sessions to close.
+func (e *userEntry) revoke() []*boundSession {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.revoked.Store(true)
+	sessions := make([]*boundSession, 0, len(e.sessions))
+	for session := range e.sessions {
+		sessions = append(sessions, session)
+	}
+	e.sessions = nil
+	return sessions
+}
+
+// userTable is published as one immutable snapshot, so a runtime user update
+// never races with a handshake that is reading the table. users keeps the
+// table as it was given (UUID strings as written) for GetUsers.
+type userTable struct {
+	byKey map[[16]byte]*userEntry
+	users []LC.VlessUser
+}
+
+type Service struct {
+	users    atomic.Pointer[userTable]
+	updateMu sync.Mutex
 	handler  Handler
 }
 
@@ -35,27 +105,67 @@ type Handler interface {
 	E.Handler
 }
 
-func NewService[T comparable](handler Handler) *Service[T] {
-	return &Service[T]{
+func NewService(handler Handler) *Service {
+	s := &Service{
 		handler: handler,
 	}
+	s.users.Store(&userTable{byKey: make(map[[16]byte]*userEntry)})
+	return s
 }
 
-func (s *Service[T]) UpdateUsers(userList []T, userUUIDList []string, userFlowList []string) {
-	userMap := make(map[[16]byte]T)
-	userFlowMap := make(map[T]string)
-	for i, userName := range userList {
-		userID := utils.UUIDMap(userUUIDList[i])
-		userMap[userID] = userName
-		userFlowMap[userName] = userFlowList[i]
+// UpdateUsers replaces the user table. A user whose record (name, key, flow)
+// is unchanged keeps its entry and its sessions; every other old entry is
+// revoked and its connections are closed. Callers validate the list; if two
+// users still share a key (old configs), the later one wins.
+func (s *Service) UpdateUsers(users []LC.VlessUser) C.InboundUserChange {
+	s.updateMu.Lock()
+	old := s.users.Load()
+	next := &userTable{
+		byKey: make(map[[16]byte]*userEntry, len(users)),
+		users: append([]LC.VlessUser(nil), users...),
 	}
-	s.userMap = userMap
-	s.userFlow = userFlowMap
+	for _, user := range users {
+		key := utils.UUIDMap(user.UUID)
+		if previous := old.byKey[key]; previous != nil && previous.name == user.Username && previous.flow == user.Flow {
+			next.byKey[key] = previous
+			continue
+		}
+		next.byKey[key] = &userEntry{name: user.Username, flow: user.Flow}
+	}
+	s.users.Store(next)
+	var change C.InboundUserChange
+	var sessions []*boundSession
+	for key, entry := range old.byKey {
+		if next.byKey[key] == entry {
+			continue
+		}
+		change.Revoked = append(change.Revoked, entry.name)
+		sessions = append(sessions, entry.revoke()...)
+	}
+	s.updateMu.Unlock()
+
+	for _, session := range sessions {
+		_ = session.closer.Close()
+		if session.tracked {
+			change.Closed++
+		}
+	}
+	sort.Strings(change.Revoked)
+	return change
 }
 
-var _ N.TCPConnectionHandler = (*Service[int])(nil)
+// Users returns the current table as it was given.
+func (s *Service) Users() []LC.VlessUser {
+	return append([]LC.VlessUser(nil), s.users.Load().users...)
+}
 
-func (s *Service[T]) NewConnection(ctx context.Context, conn net.Conn, metadata M.Metadata) error {
+// testHookBeforeBind runs between the table lookup and Bind; tests use it to
+// revoke the user in that window.
+var testHookBeforeBind func()
+
+var _ N.TCPConnectionHandler = (*Service)(nil)
+
+func (s *Service) NewConnection(ctx context.Context, conn net.Conn, metadata M.Metadata) error {
 	var version uint8
 	err := binary.Read(conn, binary.BigEndian, &version)
 	if err != nil {
@@ -105,18 +215,30 @@ func (s *Service[T]) NewConnection(ctx context.Context, conn net.Conn, metadata 
 		}
 	}
 
-	user, loaded := s.userMap[requestUUID]
-	if !loaded {
+	entry := s.users.Load().byKey[requestUUID]
+	if entry == nil {
 		return E.New("unknown UUID: ", uuid.FromBytesOrNil(requestUUID[:]))
 	}
-	ctx = auth.ContextWithUser(ctx, user)
+	ctx = auth.ContextWithUser(ctx, entry.name)
 	metadata.Destination = destination
 
-	userFlow := s.userFlow[user]
+	userFlow := entry.flow
 	requestFlow := addons.Flow
 	if requestFlow != userFlow && requestFlow != "" {
 		return E.New("flow mismatch: expected ", flowName(userFlow), ", but got ", flowName(requestFlow))
 	}
+
+	if testHookBeforeBind != nil {
+		testHookBeforeBind()
+	}
+	// Bind the client connection to the user's record: removing the user
+	// closes it, which ends the TCP relay, the UDP loop and mux streams.
+	release, ok := entry.Bind(conn, false)
+	if !ok {
+		return E.New("user ", entry.name, " removed")
+	}
+	defer release()
+	ctx = sing.WithInboundSession(ctx, entry)
 
 	responseConn := &serverConn{ExtendedConn: bufio.NewExtendedConn(conn)}
 	switch requestFlow {

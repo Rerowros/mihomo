@@ -8,6 +8,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"io"
+	"math"
 	mathrand "math/rand"
 	"net"
 	"runtime"
@@ -274,8 +275,10 @@ func bpnRandomBytes(t *testing.T, n int) []byte {
 	return b
 }
 
-// (a) Up to N requests are in flight at once, never more; N = 1 is the old
-// strictly sequential behaviour.
+// (a) The write slots no longer gate the request on its response: with a write
+// slot freed at WroteRequest, even one slot pipelines up to packetUpMaxUnacked
+// requests, and the seq window bounds the server reassembly buffer. The send
+// cadence is the interval, not the response time.
 func TestBPNPacketUpConcurrency(t *testing.T) {
 	for _, tc := range bpnPacketUpCases() {
 		for _, n := range []int{1, 4} {
@@ -296,14 +299,12 @@ func TestBPNPacketUpConcurrency(t *testing.T) {
 				assert.Equal(t, sha256.Sum256(data), sha256.Sum256(got))
 				_, seqs, maxInFlight := rec.snapshot()
 				assert.Len(t, seqs, 12)
-				assert.Equal(t, n, maxInFlight, "client requests in flight")
-				assert.LessOrEqual(t, int(server.maxInFlight.Load()), n, "server requests in flight")
-				t.Logf("n=%d: 12 requests of %d KB with 150 ms responses in %v", n, chunk/1024, elapsed)
-				if n == 1 {
-					assert.GreaterOrEqual(t, elapsed, 12*150*time.Millisecond)
-				} else {
-					assert.Less(t, elapsed, 12*150*time.Millisecond/2)
-				}
+				assert.LessOrEqual(t, maxInFlight, packetUpMaxUnacked, "client requests in flight")
+				assert.LessOrEqual(t, int(server.maxInFlight.Load()), packetUpMaxUnacked, "server requests in flight")
+				t.Logf("n=%d: 12 requests of %d KB with 150 ms responses in %v, up to %d in flight", n, chunk/1024, elapsed, maxInFlight)
+				// 11 intervals + one response: the interval paces the requests,
+				// the response does not (12*150 ms would be the old behaviour)
+				assert.Less(t, elapsed, 12*150*time.Millisecond/2)
 				requireNoBPNWriterGoroutines(t)
 			})
 		}
@@ -432,7 +433,7 @@ func TestBPNPacketUpMinPostsInterval(t *testing.T) {
 }
 
 // (e) Close does not leak goroutines, also when requests are stuck and Write
-// is blocked on a full pipeline; later writes fail.
+// is blocked on the full seq window; later writes fail.
 func TestBPNPacketUpCloseWhileBlocked(t *testing.T) {
 	cfg := &Config{Host: "example.com", Path: "/xhttp", Mode: "packet-up"}
 	server := startBPNUploadServer(t, cfg, func(uint64) time.Duration { return time.Minute })
@@ -440,13 +441,13 @@ func TestBPNPacketUpCloseWhileBlocked(t *testing.T) {
 
 	writeDone := make(chan error, 1)
 	go func() {
-		_, err := w.Write(bpnRandomBytes(t, 64*1024)) // blocks: 2 requests stuck, buffer full
+		_, err := w.Write(bpnRandomBytes(t, 64*1024)) // blocks: seq window full, responses stuck
 		writeDone <- err
 	}()
 	require.Eventually(t, func() bool {
 		rec.mu.Lock()
 		defer rec.mu.Unlock()
-		return rec.inFlight == 2
+		return rec.inFlight == packetUpMaxUnacked
 	}, 2*time.Second, 5*time.Millisecond)
 	select {
 	case err := <-writeDone:
@@ -454,7 +455,7 @@ func TestBPNPacketUpCloseWhileBlocked(t *testing.T) {
 	case <-time.After(100 * time.Millisecond):
 	}
 	_, _, maxInFlight := rec.snapshot()
-	assert.Equal(t, 2, maxInFlight)
+	assert.Equal(t, packetUpMaxUnacked, maxInFlight)
 
 	start := time.Now()
 	require.NoError(t, w.Close())
@@ -484,20 +485,23 @@ func TestBPNPacketUpCloseDeliversTail(t *testing.T) {
 	requireNoBPNWriterGoroutines(t)
 }
 
-// Upload throughput with a 150 ms response delay (a CDN round trip):
-// sequential (N = 1, upstream) vs parallel (N = PacketUpMaxInFlight).
+// Upload throughput with a 150 ms response delay (a CDN round trip).
+//
+// At sc-min-posts-interval-ms 30 the interval is the ceiling and the number of
+// write slots no longer matters. At interval 0 the old implementation was
+// limited to N requests per round trip; freeing the slot at WroteRequest makes
+// even N = 1 pipeline up to the seq window, which is several times faster.
 func TestBPNPacketUpThroughput(t *testing.T) {
 	if testing.Short() {
 		t.Skip("slow")
 	}
 	for _, tc := range bpnPacketUpCases()[:2] { // h2: POST body and GET headers
 		t.Run(tc.name, func(t *testing.T) {
-			var rate [2]float64
-			for i, n := range []int{1, PacketUpMaxInFlight} {
+			measure := func(intervalMs int, n int) float64 {
 				cfg := tc.cfg()
 				cfg.ScMaxEachPostBytes = "65536"
 				server := startBPNUploadServer(t, cfg, func(uint64) time.Duration { return 150 * time.Millisecond })
-				w, _ := newBPNTestWriter(t, cfg, server.addr, tc.alpn, 64*1024, Range{Min: 30, Max: 30}, n)
+				w, _ := newBPNTestWriter(t, cfg, server.addr, tc.alpn, 64*1024, Range{Min: intervalMs, Max: intervalMs}, n)
 				data := bpnRandomBytes(t, 1024*1024)
 				start := time.Now()
 				_, err := w.Write(data)
@@ -506,80 +510,106 @@ func TestBPNPacketUpThroughput(t *testing.T) {
 				got := server.stream(t)
 				elapsed := time.Since(start)
 				require.Equal(t, sha256.Sum256(data), sha256.Sum256(got))
-				rate[i] = float64(len(data)) * 8 / elapsed.Seconds() / 1e6
-				t.Logf("THROUGHPUT %s n=%d: 1 MiB in %v = %.1f Mbit/s", tc.name, n, elapsed.Round(time.Millisecond), rate[i])
+				rate := float64(len(data)) * 8 / elapsed.Seconds() / 1e6
+				t.Logf("THROUGHPUT %s interval=%d n=%d: 1 MiB in %v = %.1f Mbit/s", tc.name, intervalMs, n, elapsed.Round(time.Millisecond), rate)
+				requireNoBPNWriterGoroutines(t)
+				return rate
 			}
-			assert.Greater(t, rate[1], 3*rate[0])
-			requireNoBPNWriterGoroutines(t)
+
+			gated := measure(30, 1)                   // the old response-gated shape
+			paced := measure(30, PacketUpMaxInFlight) // interval-bound, N is irrelevant now
+			free := measure(0, 1)                     // write-gated: one slot already pipelines the seq window
+			burst := measure(0, PacketUpMaxInFlight)  // the seq window, not the write slots, is the ceiling
+
+			assert.InDelta(t, paced, gated, 0.5*math.Max(gated, paced), "at a 30 ms interval N must not change the rate")
+			assert.Greater(t, free, 2.5*gated, "interval 0 must beat the response-gated rate")
+			assert.InDelta(t, burst, free, 0.3*math.Max(burst, free), "at interval 0 both write slot counts use the same seq window")
 		})
 	}
 }
 
 // The whole packet-up client (download GET + parallel uploads) against the
-// mihomo server handler, which echoes the stream back.
+// mihomo server handler, which echoes the stream back. The server must treat a
+// GET with a seq as an upload: a GET without a seq is the download.
 func TestBPNPacketUpClientEchoWithServerHandler(t *testing.T) {
-	cfg := Config{Host: "example.com", Path: "/xhttp", Mode: "packet-up", ScMaxEachPostBytes: "65536"}
-	handler, err := NewServerHandler(ServerOption{
-		Config: cfg,
-		ConnHandler: func(conn net.Conn) {
-			defer conn.Close()
-			_, _ = io.Copy(conn, conn)
-		},
-	})
-	require.NoError(t, err)
-	var maxInFlight, inFlight atomic.Int32
-	delayed := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.Count(strings.Trim(r.URL.Path, "/"), "/") == 2 { // /xhttp/{session}/{seq}
-			n := inFlight.Add(1)
-			defer inFlight.Add(-1)
-			for m := maxInFlight.Load(); n > m && !maxInFlight.CompareAndSwap(m, n); m = maxInFlight.Load() {
+	for _, tc := range []struct {
+		name string
+		opts func(*Config)
+	}{
+		{name: "post", opts: func(*Config) {}},
+		{name: "get-header", opts: func(cfg *Config) {
+			cfg.UplinkHTTPMethod = "GET"
+			cfg.UplinkDataPlacement = "header"
+			cfg.UplinkDataKey = "X-Payload"
+			cfg.UplinkChunkSize = "1024"
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := Config{Host: "example.com", Path: "/xhttp", Mode: "packet-up", ScMaxEachPostBytes: "65536"}
+			tc.opts(&cfg)
+			handler, err := NewServerHandler(ServerOption{
+				Config: cfg,
+				ConnHandler: func(conn net.Conn) {
+					defer conn.Close()
+					_, _ = io.Copy(conn, conn)
+				},
+			})
+			require.NoError(t, err)
+			var maxInFlight, inFlight atomic.Int32
+			delayed := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if strings.Count(strings.Trim(r.URL.Path, "/"), "/") == 2 { // /xhttp/{session}/{seq}
+					n := inFlight.Add(1)
+					defer inFlight.Add(-1)
+					for m := maxInFlight.Load(); n > m && !maxInFlight.CompareAndSwap(m, n); m = maxInFlight.Load() {
+					}
+					time.Sleep(time.Duration(20+mathrand.Intn(60)) * time.Millisecond)
+				}
+				handler.ServeHTTP(w, r)
+			})
+			ln, err := net.Listen("tcp", "127.0.0.1:0")
+			require.NoError(t, err)
+			protocols := new(http.Protocols)
+			protocols.SetHTTP1(true)
+			protocols.SetUnencryptedHTTP2(true)
+			server := &http.Server{Handler: delayed, Protocols: protocols}
+			go func() { _ = server.Serve(ln) }()
+			t.Cleanup(func() { _ = server.Close() })
+
+			addr := ln.Addr().String()
+			client, err := NewClient(&cfg, func() http.RoundTripper {
+				return NewTransport(
+					func(ctx context.Context) (net.Conn, error) {
+						var d net.Dialer
+						return d.DialContext(ctx, "tcp", addr)
+					},
+					func(ctx context.Context, conn net.Conn, isH2 bool) (net.Conn, error) { return conn, nil },
+					nil, nil, 0)
+			}, nil, false)
+			require.NoError(t, err)
+			defer client.Close()
+
+			conn, err := client.Dial(context.Background())
+			require.NoError(t, err)
+			data := bpnRandomBytes(t, 4*1024*1024)
+			readDone := make(chan []byte, 1)
+			go func() {
+				got := make([]byte, len(data))
+				_, _ = io.ReadFull(conn, got)
+				readDone <- got
+			}()
+			_, err = conn.Write(data)
+			require.NoError(t, err)
+			select {
+			case got := <-readDone:
+				assert.Equal(t, sha256.Sum256(data), sha256.Sum256(got))
+			case <-time.After(30 * time.Second):
+				t.Fatal("echo timed out")
 			}
-			time.Sleep(time.Duration(20+mathrand.Intn(60)) * time.Millisecond)
-		}
-		handler.ServeHTTP(w, r)
-	})
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	require.NoError(t, err)
-	protocols := new(http.Protocols)
-	protocols.SetHTTP1(true)
-	protocols.SetUnencryptedHTTP2(true)
-	server := &http.Server{Handler: delayed, Protocols: protocols}
-	go func() { _ = server.Serve(ln) }()
-	t.Cleanup(func() { _ = server.Close() })
-
-	addr := ln.Addr().String()
-	client, err := NewClient(&cfg, func() http.RoundTripper {
-		return NewTransport(
-			func(ctx context.Context) (net.Conn, error) {
-				var d net.Dialer
-				return d.DialContext(ctx, "tcp", addr)
-			},
-			func(ctx context.Context, conn net.Conn, isH2 bool) (net.Conn, error) { return conn, nil },
-			nil, nil, 0)
-	}, nil, false)
-	require.NoError(t, err)
-	defer client.Close()
-
-	conn, err := client.Dial(context.Background())
-	require.NoError(t, err)
-	data := bpnRandomBytes(t, 4*1024*1024)
-	readDone := make(chan []byte, 1)
-	go func() {
-		got := make([]byte, len(data))
-		_, _ = io.ReadFull(conn, got)
-		readDone <- got
-	}()
-	_, err = conn.Write(data)
-	require.NoError(t, err)
-	select {
-	case got := <-readDone:
-		assert.Equal(t, sha256.Sum256(data), sha256.Sum256(got))
-	case <-time.After(30 * time.Second):
-		t.Fatal("echo timed out")
+			require.NoError(t, conn.Close())
+			t.Logf("server saw up to %d upload requests in flight", maxInFlight.Load())
+			assert.Greater(t, int(maxInFlight.Load()), 1)
+			assert.LessOrEqual(t, int(maxInFlight.Load()), PacketUpMaxInFlight)
+			requireNoBPNWriterGoroutines(t)
+		})
 	}
-	require.NoError(t, conn.Close())
-	t.Logf("server saw up to %d upload requests in flight", maxInFlight.Load())
-	assert.Greater(t, int(maxInFlight.Load()), 1)
-	assert.LessOrEqual(t, int(maxInFlight.Load()), PacketUpMaxInFlight)
-	requireNoBPNWriterGoroutines(t)
 }

@@ -17,6 +17,7 @@ import (
 	"github.com/metacubex/mihomo/component/auth"
 	"github.com/metacubex/mihomo/component/ca"
 	"github.com/metacubex/mihomo/component/dialer"
+	"github.com/metacubex/mihomo/component/eventbus"
 	"github.com/metacubex/mihomo/component/geodata"
 	mihomoHttp "github.com/metacubex/mihomo/component/http"
 	"github.com/metacubex/mihomo/component/iface"
@@ -32,6 +33,8 @@ import (
 	C "github.com/metacubex/mihomo/constant"
 	P "github.com/metacubex/mihomo/constant/provider"
 	"github.com/metacubex/mihomo/dns"
+	"github.com/metacubex/mihomo/hub/metrics"
+	"github.com/metacubex/mihomo/hub/xrayapi"
 	"github.com/metacubex/mihomo/listener"
 	authStore "github.com/metacubex/mihomo/listener/auth"
 	LC "github.com/metacubex/mihomo/listener/config"
@@ -40,9 +43,17 @@ import (
 	"github.com/metacubex/mihomo/log"
 	"github.com/metacubex/mihomo/ntp/ntp"
 	"github.com/metacubex/mihomo/tunnel"
+	"github.com/metacubex/mihomo/tunnel/statistic"
 )
 
 var mux sync.Mutex
+
+func updateMetrics(c *config.Metrics) {
+	if c == nil {
+		c = &config.Metrics{}
+	}
+	metrics.SetOptions(metrics.Options{Enable: c.Enable, PerUser: c.PerUser, HealthWithoutAuth: c.HealthWithoutAuth})
+}
 
 func readConfig(path string) ([]byte, error) {
 	if _, err := os.Stat(path); os.IsNotExist(err) {
@@ -96,7 +107,9 @@ func ApplyConfig(cfg *config.Config, force bool) {
 	}
 
 	updateExperimental(cfg.Experimental)
+	updateMetrics(cfg.Metrics)
 	updateUsers(cfg.Users)
+	statistic.DefaultLimitManager.Replace(cfg.UserLimits)
 	updateProxies(cfg.Proxies, cfg.Providers)
 	updateRules(cfg.Rules, cfg.SubRules, cfg.RuleProviders)
 	updateSniffer(cfg.Sniffer)
@@ -105,6 +118,9 @@ func ApplyConfig(cfg *config.Config, force bool) {
 	updateDNS(cfg.DNS, cfg.General.IPv6)
 	updateNTP(cfg.NTP) // initialize NTP after DNS because an NTP server may be a hostname.
 	updateListeners(cfg.General, cfg.Listeners, force)
+	if cfg.XrayAPI != nil {
+		xrayapi.Apply(cfg.XrayAPI.Listen)
+	}
 	updateTun(cfg.General) // tun should not care "force"
 	updateIPTables(cfg)
 	updateTunnels(cfg.Tunnels)
@@ -120,6 +136,7 @@ func ApplyConfig(cfg *config.Config, force bool) {
 	updateUpdater(cfg)
 
 	resolver.ResetConnection()
+	eventbus.PublishConfigReload(nil)
 }
 
 func initInnerTcp() {

@@ -8,6 +8,7 @@ import (
 	"sync"
 
 	"github.com/metacubex/mihomo/adapter/inbound"
+	"github.com/metacubex/mihomo/component/eventbus"
 	C "github.com/metacubex/mihomo/constant"
 	LC "github.com/metacubex/mihomo/listener/config"
 	"github.com/metacubex/mihomo/listener/http"
@@ -22,6 +23,7 @@ import (
 	"github.com/metacubex/mihomo/listener/tuic"
 	LT "github.com/metacubex/mihomo/listener/tunnel"
 	"github.com/metacubex/mihomo/log"
+	"github.com/metacubex/mihomo/tunnel/statistic"
 
 	"github.com/samber/lo"
 )
@@ -42,6 +44,7 @@ var (
 	tunnelTCPListeners  = map[string]*LT.Listener{}
 	tunnelUDPListeners  = map[string]*LT.PacketConn{}
 	inboundListeners    = map[string]C.InboundListener{}
+	failedListeners     = map[string]struct{}{} // listeners of the configuration that failed to listen
 	tunLister           *sing_tun.Listener
 	shadowSocksListener C.MultiAddrListener
 	vmessListener       *sing_vmess.Listener
@@ -54,7 +57,7 @@ var (
 	tproxyMux  sync.Mutex
 	mixedMux   sync.Mutex
 	tunnelMux  sync.Mutex
-	inboundMux sync.Mutex
+	inboundMux sync.RWMutex
 	tunMux     sync.Mutex
 	ssMux      sync.Mutex
 	vmessMux   sync.Mutex
@@ -638,12 +641,19 @@ func PatchInboundListeners(newListenerMap map[string]C.InboundListener, tunnel C
 		}
 		if err := newListener.Listen(tunnel); err != nil {
 			log.Errorln("Listener %s listen err: %s", name, err.Error())
+			failedListeners[name] = struct{}{}
 			continue
 		}
+		delete(failedListeners, name)
 		inboundListeners[name] = newListener
 	}
 
 	if dropOld {
+		for name := range failedListeners {
+			if _, ok := newListenerMap[name]; !ok {
+				delete(failedListeners, name)
+			}
+		}
 		for name, oldListener := range inboundListeners {
 			if _, ok := newListenerMap[name]; !ok {
 				_ = oldListener.Close()
@@ -651,6 +661,128 @@ func PatchInboundListeners(newListenerMap map[string]C.InboundListener, tunnel C
 			}
 		}
 	}
+}
+
+// FailedInboundListeners returns the number of listeners of the last applied
+// configuration that failed to listen (the port is taken, a certificate is
+// missing and so on); readiness requires it to be zero.
+func FailedInboundListeners() int {
+	inboundMux.RLock()
+	defer inboundMux.RUnlock()
+	return len(failedListeners)
+}
+
+// GetInboundListener returns the live inbound listener registered under name.
+func GetInboundListener(name string) (C.InboundListener, bool) {
+	inboundMux.RLock()
+	defer inboundMux.RUnlock()
+	listener, ok := inboundListeners[name]
+	return listener, ok
+}
+
+// InboundListenerNames returns the names of the live inbound listeners.
+func InboundListenerNames() []string {
+	inboundMux.RLock()
+	defer inboundMux.RUnlock()
+	names := make([]string, 0, len(inboundListeners))
+	for name := range inboundListeners {
+		names = append(names, name)
+	}
+	return names
+}
+
+// inboundUsersUpdateMu serialises read-modify-write updates from the REST API
+// and the Xray gRPC API, so two panels adding users cannot drop each other's
+// change.
+var inboundUsersUpdateMu sync.Mutex
+
+// UpdateInboundUsers reads the live user table, applies update and writes the
+// result back while holding the registry lock: the listener cannot be replaced
+// between the read and the write.
+// The change reports the revoked users and the connections closed for them.
+func UpdateInboundUsers(name string, update func([]C.InboundUser) ([]C.InboundUser, error)) (C.InboundUserChange, error) {
+	inboundUsersUpdateMu.Lock()
+	defer inboundUsersUpdateMu.Unlock()
+	inboundMux.RLock()
+	defer inboundMux.RUnlock()
+	listener, ok := inboundListeners[name]
+	if !ok {
+		return C.InboundUserChange{}, C.ErrInboundNotFound
+	}
+	manager, ok := listener.(C.InboundUserManager)
+	if !ok {
+		return C.InboundUserChange{}, C.ErrInboundNoUserTable
+	}
+	users, err := update(manager.GetUsers())
+	if err != nil {
+		return C.InboundUserChange{}, err
+	}
+	change, err := manager.SetUsers(users)
+	forgetRevokedIPs(name, change, err)
+	publishUserRevoked(name, change, err)
+	return change, err
+}
+
+// forgetRevokedIPs drops the client addresses of the users of inbound name
+// that a runtime update revoked, so a user given a new key does not start with
+// the max-ips places of the old one taken.
+func forgetRevokedIPs(name string, change C.InboundUserChange, err error) {
+	if err != nil {
+		return
+	}
+	for _, user := range change.Revoked {
+		statistic.DefaultUserManager.ForgetIPs(statistic.UserKey{Inbound: name, User: user})
+	}
+}
+
+// publishUserRevoked reports the users of inbound name that a runtime update
+// of its user table revoked.
+func publishUserRevoked(name string, change C.InboundUserChange, err error) {
+	if err != nil || len(change.Revoked) == 0 || !eventbus.Enabled(eventbus.TypeUserRevoked) {
+		return
+	}
+	eventbus.Publish(eventbus.TypeUserRevoked, eventbus.UserRevoked{
+		Inbound: name,
+		Users:   append([]string(nil), change.Revoked...),
+		Closed:  change.Closed,
+	})
+}
+
+// GetInboundUsers returns the runtime user table of an inbound.
+func GetInboundUsers(name string) ([]C.InboundUser, error) {
+	inboundMux.RLock()
+	defer inboundMux.RUnlock()
+	listener, ok := inboundListeners[name]
+	if !ok {
+		return nil, C.ErrInboundNotFound
+	}
+	manager, ok := listener.(C.InboundUserManager)
+	if !ok {
+		return nil, C.ErrInboundNoUserTable
+	}
+	return manager.GetUsers(), nil
+}
+
+// SetInboundUsers replaces the runtime user table of an inbound. The listener
+// stays up: the new table is used by the next handshake, and removed or
+// re-keyed users lose their open connections.
+func SetInboundUsers(name string, users []C.InboundUser) (C.InboundUserChange, error) {
+	inboundUsersUpdateMu.Lock()
+	defer inboundUsersUpdateMu.Unlock()
+	inboundMux.RLock()
+	defer inboundMux.RUnlock()
+	listener, ok := inboundListeners[name]
+	if !ok {
+		return C.InboundUserChange{}, C.ErrInboundNotFound
+	}
+	manager, ok := listener.(C.InboundUserManager)
+	if !ok {
+		return C.InboundUserChange{}, C.ErrInboundNoUserTable
+	}
+	change, err := manager.SetUsers(users)
+	forgetRevokedIPs(name, change, err)
+	publishUserRevoked(name, change, err)
+	return change, err
 }
 
 // GetPorts return the ports of proxy servers

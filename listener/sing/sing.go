@@ -124,6 +124,11 @@ func (h *ListenerHandler) ParseSpecialFqdn(ctx context.Context, conn net.Conn, m
 }
 
 func (h *ListenerHandler) NewConnection(ctx context.Context, conn net.Conn, metadata M.Metadata) error {
+	if session := userSession(ctx); session != nil && session.Revoked() {
+		// a mux stream opened after its user was removed
+		_ = conn.Close()
+		return C.ErrInboundUserRevoked
+	}
 	if h.IsSpecialFqdn(metadata.Destination.Fqdn) {
 		return h.ParseSpecialFqdn(ctx, conn, metadata)
 	}
@@ -165,6 +170,7 @@ func (h *ListenerHandler) NewPacketConnection(ctx context.Context, conn network.
 		defer mutex.Unlock()
 		writer = nil
 	}()
+	session := userSession(ctx)
 	rwOptions := network.ReadWaitOptions{}
 	readWaiter, isReadWaiter := bufio.CreatePacketReadWaiter(conn)
 	if isReadWaiter {
@@ -191,6 +197,12 @@ func (h *ListenerHandler) NewPacketConnection(ctx context.Context, conn network.
 				break
 			}
 			return err
+		}
+		if session != nil && session.Revoked() {
+			// the user was removed: stop reading, the deferred Close ends
+			// the client's association
+			buff.Release()
+			break
 		}
 		cPacket := &packet{
 			writer: &writer,

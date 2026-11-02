@@ -26,6 +26,12 @@ func WithInUser(user string) Addition {
 	}
 }
 
+func WithInSession(session C.InboundSession) Addition {
+	return func(metadata *C.Metadata) {
+		metadata.InSession = session
+	}
+}
+
 func WithSpecialRules(specialRules string) Addition {
 	return func(metadata *C.Metadata) {
 		metadata.SpecialRules = specialRules

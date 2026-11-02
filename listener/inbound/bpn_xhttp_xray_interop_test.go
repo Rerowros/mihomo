@@ -156,15 +156,14 @@ func TestBPNXHTTPPacketUpXrayInterop(t *testing.T) {
 						})
 					}
 					if len(rates) == 2 {
-						t.Logf("THROUGHPUT xray=%s %s/%s rtt=150ms: parallel/sequential upload = %.1fx",
+						t.Logf("THROUGHPUT xray=%s %s/%s rtt=150ms: n=8/n=1 upload = %.1fx",
 							xrayVersion, uplink.name, alpn.name, rates[1]/rates[0])
-						// h1 opens a TLS connection per request in flight (2-3
-						// round trips each), so its gain on 2 MiB is smaller
-						minGain := 2.5
-						if alpn.name == "h1" {
-							minGain = 1.5
-						}
-						require.Greater(t, rates[1], minGain*rates[0], "parallel upload must be much faster")
+						// The write slot is freed at WroteRequest, so even n=1
+						// pipelines up to the seq window: at a 30 ms interval the
+						// cadence, not the number of write slots, is the ceiling.
+						// The interval-0 gain is measured by
+						// TestBPNPacketUpThroughput in transport/xhttp.
+						require.Greater(t, rates[1], 0.6*rates[0], "n=8 must not be slower than n=1")
 					}
 				})
 			}

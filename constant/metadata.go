@@ -217,6 +217,10 @@ type Metadata struct {
 	RawDstAddr net.Addr `json:"-"`
 	// Only domain rule
 	SniffHost string `json:"sniffHost"`
+
+	// InSession is the record of the inbound user that authenticated the
+	// connection; nil for connections without such a user.
+	InSession InboundSession `json:"-"`
 }
 
 func (m *Metadata) RemoteAddress() string {
