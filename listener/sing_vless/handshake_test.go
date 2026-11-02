@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	LC "github.com/metacubex/mihomo/listener/config"
 	"github.com/metacubex/mihomo/transport/vless"
 
 	"github.com/gofrs/uuid/v5"
@@ -73,8 +74,8 @@ func serveVlessOnce(t *testing.T, l *Listener) net.Conn {
 }
 
 func newTestVlessListener(idle time.Duration) *Listener {
-	service := NewService[string](echoAfterIdleHandler{idle: idle})
-	service.UpdateUsers([]string{"test"}, []string{testUUID}, []string{""})
+	service := NewService(echoAfterIdleHandler{idle: idle})
+	service.UpdateUsers([]LC.VlessUser{{Username: "test", UUID: testUUID}})
 	return &Listener{service: service}
 }
 
