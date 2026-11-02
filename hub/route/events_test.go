@@ -390,3 +390,26 @@ func TestEventsEndWithControllerServer(t *testing.T) {
 	require.Eventually(t, func() bool { return eventbus.Default.Subscribers() == before }, 3*time.Second, 10*time.Millisecond)
 	assert.Equal(t, int64(0), eventsStreams.Load())
 }
+
+// A finished websocket /events stream leaves the controller's stream list
+// (P16 x P17): otherwise every reconnect of a panel would keep its connection.
+func TestEventsWebsocketUntracked(t *testing.T) {
+	waitNoStreams(t)
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	server := newServer(router(false, testSecret, "", Cors{}))
+	go func() { _ = server.Serve(l) }()
+	t.Cleanup(func() { closeServer(server) })
+
+	tracked := func() int {
+		streamsMu.Lock()
+		defer streamsMu.Unlock()
+		return len(streams)
+	}
+	before := tracked()
+	conn, _, status := openEventsWS(t, l.Addr().String(), "")
+	require.Equal(t, stdhttp.StatusSwitchingProtocols, status)
+	require.Eventually(t, func() bool { return tracked() == before+1 }, 3*time.Second, 10*time.Millisecond)
+	_ = conn.Close()
+	require.Eventually(t, func() bool { return tracked() == before }, 3*time.Second, 10*time.Millisecond, "the closed /events websocket is still tracked")
+}
