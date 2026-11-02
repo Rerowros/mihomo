@@ -2,10 +2,12 @@ package adapter
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/metacubex/mihomo/adapter/outbound"
 	"github.com/metacubex/mihomo/common/structure"
 	C "github.com/metacubex/mihomo/constant"
+	"github.com/metacubex/mihomo/transport/vless"
 )
 
 func ParseProxy(mapping map[string]any, options ...ProxyOption) (C.Proxy, error) {
@@ -231,18 +233,57 @@ func ParseProxy(mapping map[string]any, options ...ProxyOption) (C.Proxy, error)
 		return nil, err
 	}
 
+	muxOption := &outbound.SingMuxOption{}
 	if muxMapping, muxExist := mapping["smux"].(map[string]any); muxExist {
-		muxOption := &outbound.SingMuxOption{}
 		err = decoder.Decode(muxMapping, muxOption)
 		if err != nil {
+			_ = proxy.Close()
 			return nil, err
 		}
-		if muxOption.Enabled {
-			proxy, err = outbound.NewSingMux(*muxOption, proxy)
-			if err != nil {
-				return nil, err
-			}
+	}
+
+	muxCoolOption := &outbound.MuxCoolOption{}
+	if muxMapping, muxExist := mapping["mux.cool"].(map[string]any); muxExist {
+		err = decoder.Decode(muxMapping, muxCoolOption)
+		if err != nil {
+			_ = proxy.Close()
+			return nil, err
 		}
+	}
+	if muxOption.Enabled && muxCoolOption.Enabled {
+		_ = proxy.Close()
+		return nil, fmt.Errorf("smux and mux.cool cannot be enabled together")
+	}
+	if muxCoolOption.Enabled && proxyType != "vless" {
+		// Only the VLESS outbound sends the mux command for the
+		// v1.mux.cool carrier; other outbounds would dial it as a host.
+		_ = proxy.Close()
+		return nil, fmt.Errorf("mux.cool is only supported for vless proxies, not %s", proxyType)
+	}
+	if muxCoolOption.Enabled {
+		// Vision splices the inner TLS of a single TCP connection, while a
+		// mux.cool carrier holds many sessions; a Vision server breaks mux
+		// connections that contain TCP sessions.
+		if flow, _ := mapping["flow"].(string); strings.HasPrefix(flow, vless.XRV) {
+			_ = proxy.Close()
+			return nil, fmt.Errorf("mux.cool cannot be used with VLESS flow %s: disable mux.cool or remove flow", flow)
+		}
+	}
+	if muxOption.Enabled {
+		wrapped, err := outbound.NewSingMux(*muxOption, proxy)
+		if err != nil {
+			_ = proxy.Close()
+			return nil, err
+		}
+		proxy = wrapped
+	}
+	if muxCoolOption.Enabled || muxCoolOption.MaxConcurrency < 0 || muxCoolOption.MaxConnections < 0 || muxCoolOption.MaxCarriers < 0 || muxCoolOption.XUDPConcurrency < 0 {
+		wrapped, err := outbound.NewMuxCool(*muxCoolOption, proxy)
+		if err != nil {
+			_ = proxy.Close()
+			return nil, err
+		}
+		proxy = wrapped
 	}
 
 	proxy = outbound.NewAutoCloseProxyAdapter(proxy)
