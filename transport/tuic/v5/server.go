@@ -53,6 +53,11 @@ func (s *serverHandler) AuthOk() bool {
 	return s.authOk.Load()
 }
 
+// AuthDone is closed once authentication succeeded, failed or timed out.
+func (s *serverHandler) AuthDone() <-chan struct{} {
+	return s.authCh
+}
+
 func (s *serverHandler) HandleTimeout() {
 	s.authOnce.Do(func() {
 		_ = s.quicConn.CloseWithError(AuthenticationTimeout, "AuthenticationTimeout")

@@ -147,6 +147,8 @@ func NewWithConfig(config LC.AuthServer, lc C.InboundListenConfig, tunnel C.Tunn
 
 func handleConn(conn net.Conn, tunnel C.Tunnel, store auth.AuthStore, additions ...inbound.Addition) {
 	bufConn := N.NewBufferedConn(conn)
+	// the protocol handlers re-arm it and clear it once the request is parsed
+	authStore.SetHandshakeDeadline(conn)
 	head, err := bufConn.Peek(1)
 	if err != nil {
 		conn.Close()

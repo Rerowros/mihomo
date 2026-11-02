@@ -150,6 +150,8 @@ func NewWithConfig(config LC.AuthServer, lc C.InboundListenConfig, tunnel C.Tunn
 
 func handleSocks(conn net.Conn, tunnel C.Tunnel, store auth.AuthStore, additions ...inbound.Addition) {
 	bufConn := N.NewBufferedConn(conn)
+	// HandleSocks4/5 re-arm it and clear it once the request is parsed
+	authStore.SetHandshakeDeadline(conn)
 	head, err := bufConn.Peek(1)
 	if err != nil {
 		conn.Close()
@@ -168,22 +170,26 @@ func handleSocks(conn net.Conn, tunnel C.Tunnel, store auth.AuthStore, additions
 
 func HandleSocks4(conn net.Conn, tunnel C.Tunnel, store auth.AuthStore, additions ...inbound.Addition) {
 	authenticator := store.Authenticator()
+	authStore.SetHandshakeDeadline(conn)
 	addr, _, user, err := socks4.ServerHandshake(conn, authenticator)
 	if err != nil {
 		conn.Close()
 		return
 	}
+	authStore.ClearHandshakeDeadline(conn)
 	additions = append(additions, inbound.WithInUser(user))
 	tunnel.HandleTCPConn(inbound.NewSocket(socks5.ParseAddr(addr), conn, C.SOCKS4, additions...))
 }
 
 func HandleSocks5(conn net.Conn, tunnel C.Tunnel, store auth.AuthStore, additions ...inbound.Addition) {
 	authenticator := store.Authenticator()
+	authStore.SetHandshakeDeadline(conn)
 	target, command, user, err := socks5.ServerHandshake(conn, authenticator)
 	if err != nil {
 		conn.Close()
 		return
 	}
+	authStore.ClearHandshakeDeadline(conn)
 	if command == socks5.CmdUDPAssociate {
 		defer conn.Close()
 		io.Copy(io.Discard, conn)

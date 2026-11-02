@@ -227,6 +227,9 @@ func (s *Service) NewConnection(ctx context.Context, conn net.Conn, metadata M.M
 	if requestFlow != userFlow && requestFlow != "" {
 		return E.New("flow mismatch: expected ", flowName(userFlow), ", but got ", flowName(requestFlow))
 	}
+	// the header is read and the user is authenticated: lift the handshake
+	// deadline set by the listener, the session may idle from here on
+	clearHandshakeDeadline(conn)
 
 	if testHookBeforeBind != nil {
 		testHookBeforeBind()
