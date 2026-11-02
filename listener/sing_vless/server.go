@@ -24,6 +24,7 @@ import (
 	"github.com/metacubex/mihomo/transport/gun"
 	"github.com/metacubex/mihomo/transport/vless/encryption"
 	mihomoVMess "github.com/metacubex/mihomo/transport/vmess"
+	"github.com/metacubex/mihomo/transport/xdrive"
 	"github.com/metacubex/mihomo/transport/xhttp"
 
 	"github.com/metacubex/http"
@@ -36,6 +37,7 @@ type Listener struct {
 	closed     bool
 	config     LC.VlessServer
 	listeners  []net.Listener
+	xdrive     *xdrive.Listener
 	service    *Service
 	decryption *encryption.ServerInstance
 	handler    *sing.ListenerHandler
@@ -269,6 +271,44 @@ func New(config LC.VlessServer, lc C.InboundListenConfig, tunnel C.Tunnel, addit
 	if httpServer.Handler != nil {
 		preauth.GuardFirstRequest(&httpServer, handshakeTimeout)
 	}
+	if config.XDriveConfig.Service != "" {
+		// xdrive is a transport without a listening socket: both peers exchange
+		// segments through a cloud folder, and the storage provides transport
+		// security (HTTPS). A TLS layer or a second transport on top would not
+		// be carried by the protocol, so reject the combination instead of
+		// silently ignoring it.
+		if config.WsPath != "" || config.GrpcServiceName != "" || config.XHTTPConfig.Path != "" ||
+			config.XHTTPConfig.Host != "" || config.XHTTPConfig.Mode != "" {
+			return nil, errors.New("xdrive transport cannot be combined with ws, grpc or xhttp")
+		}
+		if len(securityModes) > 0 {
+			return nil, errors.New("xdrive transport gets transport security from the storage service; remove certificate/shadow-tls/res-tls/jls/reality: " + strings.Join(securityModes, ", "))
+		}
+		if sl.decryption == nil && !config.AllowInsecure {
+			return nil, errors.New("xdrive carries VLESS over the cloud folder without TLS; set decryption or allow-insecure")
+		}
+		sl.xdrive, err = xdrive.Listen(&xdrive.Config{
+			Service:         config.XDriveConfig.Service,
+			RemoteFolder:    config.XDriveConfig.RemoteFolder,
+			Secrets:         config.XDriveConfig.Secrets,
+			Template:        config.XDriveConfig.Template,
+			SegmentBytes:    config.XDriveConfig.SegmentBytes,
+			FlushInterval:   time.Duration(config.XDriveConfig.FlushIntervalMs) * time.Millisecond,
+			PollInterval:    time.Duration(config.XDriveConfig.PollIntervalMs) * time.Millisecond,
+			MaxPollInterval: time.Duration(config.XDriveConfig.MaxPollIntervalMs) * time.Millisecond,
+			EagerWindow:     time.Duration(config.XDriveConfig.EagerWindowMs) * time.Millisecond,
+			HoleTimeout:     time.Duration(config.XDriveConfig.HoleTimeoutMs) * time.Millisecond,
+			SessionTTL:      time.Duration(config.XDriveConfig.SessionTTLSeconds) * time.Second,
+			Concurrency:     config.XDriveConfig.Concurrency,
+		}, func(conn net.Conn) {
+			sl.HandleConn(conn, tunnel, additions...)
+		})
+		if err != nil {
+			return nil, err
+		}
+		return sl, nil
+	}
+
 	for _, addr := range strings.Split(config.Listen, ",") {
 		addr := addr
 
@@ -329,6 +369,11 @@ func (l *Listener) Users() []LC.VlessUser {
 func (l *Listener) Close() error {
 	l.closed = true
 	var retErr error
+	if l.xdrive != nil {
+		if err := l.xdrive.Close(); err != nil {
+			retErr = err
+		}
+	}
 	for _, lis := range l.listeners {
 		err := lis.Close()
 		if err != nil {

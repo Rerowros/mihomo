@@ -20,6 +20,7 @@ type VlessServer struct {
 	Decryption      string
 	WsPath          string
 	XHTTPConfig     XHTTPConfig
+	XDriveConfig    XDriveConfig
 	GrpcServiceName string
 	FallbackPage    string // an HTML page for the requests not the inbound's own on an HTTP transport (listener/fallback)
 	Certificate     string
@@ -57,6 +58,23 @@ type XHTTPConfig struct {
 	ScStreamUpServerSecs string
 	ScMaxBufferedPosts   string
 	ScMaxEachPostBytes   string
+}
+
+// XDriveConfig is the runtime form of the xdrive inbound transport: the
+// segments live in a cloud folder, the listener opens no TCP socket.
+type XDriveConfig struct {
+	Service           string
+	RemoteFolder      string
+	Secrets           []string
+	Template          string
+	SegmentBytes      int
+	FlushIntervalMs   int
+	PollIntervalMs    int
+	MaxPollIntervalMs int
+	EagerWindowMs     int
+	HoleTimeoutMs     int
+	SessionTTLSeconds int
+	Concurrency       int
 }
 
 func (t VlessServer) String() string {
