@@ -36,7 +36,7 @@ type Socks struct {
 }
 
 func NewSocks(options *SocksOption) (*Socks, error) {
-	base, err := NewBase(&options.BaseOption)
+	base, err := newStreamBase(&options.BaseOption)
 	if err != nil {
 		return nil, err
 	}

@@ -33,7 +33,7 @@ type HTTP struct {
 }
 
 func NewHTTP(options *HTTPOption) (*HTTP, error) {
-	base, err := NewBase(&options.BaseOption)
+	base, err := newStreamBase(&options.BaseOption)
 	if err != nil {
 		return nil, err
 	}

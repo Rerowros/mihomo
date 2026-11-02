@@ -21,6 +21,7 @@ type VlessServer struct {
 	WsPath          string
 	XHTTPConfig     XHTTPConfig
 	GrpcServiceName string
+	FallbackPage    string // an HTML page for the requests not the inbound's own on an HTTP transport (listener/fallback)
 	Certificate     string
 	PrivateKey      string
 	ClientAuthType  string

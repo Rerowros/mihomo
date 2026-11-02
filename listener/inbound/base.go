@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/metacubex/mihomo/adapter/inbound"
+	"github.com/metacubex/mihomo/common/proxyproto"
 	"github.com/metacubex/mihomo/common/utils"
 	C "github.com/metacubex/mihomo/constant"
 )
@@ -18,9 +19,27 @@ type Base struct {
 	specialRules string
 	listenAddr   netip.Addr
 	ports        utils.IntRanges[uint16]
+	// proxyProtocol is set when the listener expects a PROXY protocol header
+	proxyProtocol *proxyproto.Config
 }
 
+// NewBase builds the base of a listener without TCP streams: proxy-protocol
+// is refused.
 func NewBase(options *BaseOption) (*Base, error) {
+	return newBase(options, false)
+}
+
+// newStreamBase builds the base of a TCP stream listener, which may expect a
+// PROXY protocol header (proxy-protocol).
+func newStreamBase(options *BaseOption) (*Base, error) {
+	return newBase(options, true)
+}
+
+func newBase(options *BaseOption, stream bool) (*Base, error) {
+	proxy, err := options.proxyProtocolConfig(stream)
+	if err != nil {
+		return nil, err
+	}
 	if options.Listen == "" {
 		options.Listen = "0.0.0.0"
 	}
@@ -33,11 +52,12 @@ func NewBase(options *BaseOption) (*Base, error) {
 		return nil, err
 	}
 	return &Base{
-		name:         options.Name(),
-		listenAddr:   addr,
-		specialRules: options.SpecialRules,
-		ports:        ports,
-		config:       options,
+		name:          options.Name(),
+		listenAddr:    addr,
+		specialRules:  options.SpecialRules,
+		ports:         ports,
+		config:        options,
+		proxyProtocol: proxy,
 	}, nil
 }
 
@@ -84,7 +104,11 @@ func (b *Base) Additions() []inbound.Addition {
 }
 
 func (b *Base) ListenConfig() C.InboundListenConfig {
-	return b.config.ListenConfig()
+	lc := b.config.ListenConfig()
+	if b.proxyProtocol != nil {
+		return proxyProtocolListenConfig{InboundListenConfig: lc, config: *b.proxyProtocol}
+	}
+	return lc
 }
 
 var _ C.InboundListener = (*Base)(nil)
@@ -96,6 +120,16 @@ type BaseOption struct {
 	SpecialRules string `inbound:"rule,omitempty"`
 	SpecialProxy string `inbound:"proxy,omitempty"`
 	RoutingMark  int    `inbound:"routing-mark,omitempty"`
+	// ProxyProtocol makes the listener expect a PROXY protocol header (v1 or
+	// v2) on every accepted TCP connection, and take the client address from
+	// it. Only the TCP stream listeners have it, and only their TCP side: UDP
+	// (the UDP relay of socks and shadowsocks, the QUIC listeners) has no PROXY
+	// protocol header.
+	ProxyProtocol bool `inbound:"proxy-protocol,omitempty"`
+	// ProxyProtocolTrusted are the peers (CIDRs, addresses, "loopback",
+	// "private") that may send the header, loopback when empty. A connection
+	// from any other peer is closed.
+	ProxyProtocolTrusted []string `inbound:"proxy-protocol-trusted,omitempty"`
 
 	//
 	// The following parameters are used internally, assign value by the structure decoder are disallowed

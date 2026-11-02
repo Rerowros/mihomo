@@ -46,7 +46,7 @@ type ShadowSocks struct {
 }
 
 func NewShadowSocks(options *ShadowSocksOption) (*ShadowSocks, error) {
-	base, err := NewBase(&options.BaseOption)
+	base, err := newStreamBase(&options.BaseOption)
 	if err != nil {
 		return nil, err
 	}
