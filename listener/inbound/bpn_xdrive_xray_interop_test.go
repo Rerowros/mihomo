@@ -99,6 +99,10 @@ func TestBPNXDriveXrayInterop(t *testing.T) {
 	})
 	select {
 	case err := <-done:
+		done <- err // the cleanup waits on it
+		if strings.Contains(output.String(), "unknown transport protocol: xdrive") {
+			t.Skipf("Xray %s has no xdrive transport", xrayVersion)
+		}
 		t.Fatalf("Xray exited before the test: %v\n%s", err, output.String())
 	case <-time.After(time.Second):
 	}
