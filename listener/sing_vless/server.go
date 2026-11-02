@@ -301,7 +301,11 @@ func New(config LC.VlessServer, lc C.InboundListenConfig, tunnel C.Tunnel, addit
 			SessionTTL:      time.Duration(config.XDriveConfig.SessionTTLSeconds) * time.Second,
 			Concurrency:     config.XDriveConfig.Concurrency,
 		}, func(conn net.Conn) {
-			sl.HandleConn(conn, tunnel, additions...)
+			// Only peers with the storage secrets reach this, and one round
+			// trip through the cloud folder can take seconds: the 15 s
+			// pre-auth deadline of a socket would cut the VLESS Encryption
+			// handshake. SessionTTL bounds an idle session instead.
+			sl.handleConn(conn, false, tunnel, additions...)
 		})
 		if err != nil {
 			return nil, err
@@ -401,10 +405,16 @@ func (l *Listener) AddrList() (addrList []net.Addr) {
 }
 
 func (l *Listener) HandleConn(conn net.Conn, tunnel C.Tunnel, additions ...inbound.Addition) {
+	l.handleConn(conn, true, tunnel, additions...)
+}
+
+func (l *Listener) handleConn(conn net.Conn, deadline bool, tunnel C.Tunnel, additions ...inbound.Addition) {
 	ctx := sing.WithAdditions(context.TODO(), additions...)
 	// cleared by NewConnection once the request header is read and the user
 	// is authenticated
-	setHandshakeDeadline(conn)
+	if deadline {
+		setHandshakeDeadline(conn)
+	}
 	if l.decryption != nil {
 		c, err := l.decryption.Handshake(conn, nil)
 		if err != nil {
