@@ -1,0 +1,29 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 340" role="img" aria-labelledby="t d">
+  <title id="t">Veles</title>
+  <desc id="d">Ядро на базе Mihomo: 19 патчей и 148 коммитов поверх тега v1.19.33</desc>
+  <style>
+    :root { --bg:#f6f3ea; --line:#ddd6c3; --ink:#23291f; --muted:#5d6455; --accent:#a85f00; }
+    @media (prefers-color-scheme: dark) { :root { --bg:#161a14; --line:#30372b; --ink:#f0ece0; --muted:#a3aa98; --accent:#e8a33d; } }
+    text { font-family: -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; fill: var(--ink); }
+    .sub { font-size: 24px; fill: var(--muted); }
+    .num { font-size: 40px; font-weight: 700; }
+    .cap { font-size: 16px; fill: var(--muted); }
+  </style>
+  <rect x="1" y="1" width="1198" height="338" rx="16" fill="var(--bg)" stroke="var(--line)" stroke-width="2"/>
+  <g fill="none" stroke="var(--accent)" stroke-width="13" stroke-linecap="round" stroke-linejoin="round" transform="translate(56 58)">
+    <path d="M6 22 C-6 6 8 -6 20 6 C34 22 42 64 66 110 C90 64 98 22 112 6 C124 -6 138 6 126 22"/>
+    <path d="M42 34 Q66 52 90 34" stroke-width="8"/>
+    <circle cx="66" cy="66" r="4.5" fill="var(--accent)" stroke="none"/>
+  </g>
+  <text x="222" y="118" font-size="84" font-weight="700" letter-spacing="1">Veles</text>
+  <text class="sub" x="224" y="162">Ядро на базе Mihomo для новых серверов Xray и работы при блокировках</text>
+  <line x1="56" y1="208" x2="1144" y2="208" stroke="var(--line)" stroke-width="2"/>
+  <text class="num" x="56" y="266">19</text>
+  <text class="cap" x="56" y="294">патчей</text>
+  <text class="num" x="256" y="266">148</text>
+  <text class="cap" x="256" y="294">коммитов поверх Mihomo</text>
+  <text class="num" x="556" y="266">v1.19.33</text>
+  <text class="cap" x="556" y="294">версия Mihomo в основе</text>
+  <text class="num" x="856" y="266">GPL-3.0</text>
+  <text class="cap" x="856" y="294">открытый код, как у Mihomo</text>
+</svg>

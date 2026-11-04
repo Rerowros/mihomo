@@ -1,0 +1,57 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 480" role="img" aria-labelledby="t d">
+  <title id="t">Подключение REALITY к разным версиям Xray</title>
+  <desc id="d">Mihomo v1.19.31 с настройками по умолчанию: chrome, firefox и safari работают только с Xray 26.3.27, пустой отпечаток не работает нигде. Veles: все варианты работают со всеми тремя версиями, на Xray 26.9.9 со второго соединения.</desc>
+  <style>
+    :root { --bg:#f6f3ea; --line:#ddd6c3; --ink:#23291f; --muted:#5d6455; --good:#1f6f43; --goodbg:#dcebdc; --bad:#a3302a; --badbg:#f4dfd9; }
+    @media (prefers-color-scheme: dark) { :root { --bg:#161a14; --line:#30372b; --ink:#f0ece0; --muted:#a3aa98; --good:#7fcf9c; --goodbg:#1f3526; --bad:#f09a8e; --badbg:#3d2320; } }
+    text { font-family: -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; fill: var(--ink); }
+    .h { font-size: 28px; font-weight: 700; }
+    .p { font-size: 22px; font-weight: 700; }
+    .col { font-size: 15px; fill: var(--muted); text-anchor: middle; }
+    .row { font-size: 17px; }
+    .note { font-size: 15px; fill: var(--muted); }
+    .ok rect { fill: var(--goodbg); } .ok text { fill: var(--good); font-size: 16px; font-weight: 600; text-anchor: middle; }
+    .no rect { fill: var(--badbg); } .no text { fill: var(--bad); font-size: 16px; font-weight: 600; text-anchor: middle; }
+  </style>
+  <rect x="1" y="1" width="1198" height="478" rx="16" fill="var(--bg)" stroke="var(--line)" stroke-width="2"/>
+  <text class="h" x="40" y="54">Подключается ли REALITY к новым версиям Xray</text>
+  <defs>
+    <g id="y"><rect width="116" height="46" rx="4"/></g>
+  </defs>
+
+  <text class="p" x="40" y="106">Mihomo v1.19.31</text>
+  <text class="col" x="218" y="136">Xray 26.3.27</text><text class="col" x="342" y="136">Xray 26.7.28</text><text class="col" x="466" y="136">Xray 26.9.9</text>
+  <text class="row" x="40" y="178">chrome</text><text class="row" x="40" y="232">firefox</text><text class="row" x="40" y="286">safari</text><text class="row" x="40" y="340">без отпечатка</text>
+  <g class="ok" transform="translate(160 150)"><rect width="116" height="46" rx="4"/><text x="58" y="29">✓ да</text></g>
+  <g class="no" transform="translate(284 150)"><rect width="116" height="46" rx="4"/><text x="58" y="29">✕ нет</text></g>
+  <g class="no" transform="translate(408 150)"><rect width="116" height="46" rx="4"/><text x="58" y="29">✕ нет</text></g>
+  <g class="ok" transform="translate(160 204)"><rect width="116" height="46" rx="4"/><text x="58" y="29">✓ да</text></g>
+  <g class="no" transform="translate(284 204)"><rect width="116" height="46" rx="4"/><text x="58" y="29">✕ нет</text></g>
+  <g class="no" transform="translate(408 204)"><rect width="116" height="46" rx="4"/><text x="58" y="29">✕ нет</text></g>
+  <g class="ok" transform="translate(160 258)"><rect width="116" height="46" rx="4"/><text x="58" y="29">✓ да</text></g>
+  <g class="no" transform="translate(284 258)"><rect width="116" height="46" rx="4"/><text x="58" y="29">✕ нет</text></g>
+  <g class="no" transform="translate(408 258)"><rect width="116" height="46" rx="4"/><text x="58" y="29">✕ нет</text></g>
+  <g class="no" transform="translate(160 312)"><rect width="116" height="46" rx="4"/><text x="58" y="29">✕ нет</text></g>
+  <g class="no" transform="translate(284 312)"><rect width="116" height="46" rx="4"/><text x="58" y="29">✕ нет</text></g>
+  <g class="no" transform="translate(408 312)"><rect width="116" height="46" rx="4"/><text x="58" y="29">✕ нет</text></g>
+
+  <text class="p" x="640" y="106">Veles</text>
+  <text class="col" x="818" y="136">Xray 26.3.27</text><text class="col" x="942" y="136">Xray 26.7.28</text><text class="col" x="1066" y="136">Xray 26.9.9</text>
+  <text class="row" x="640" y="178">chrome</text><text class="row" x="640" y="232">firefox</text><text class="row" x="640" y="286">safari</text><text class="row" x="640" y="340">без отпечатка</text>
+  <g class="ok" transform="translate(760 150)"><rect width="116" height="46" rx="4"/><text x="58" y="29">✓ да</text></g>
+  <g class="ok" transform="translate(884 150)"><rect width="116" height="46" rx="4"/><text x="58" y="29">✓ да</text></g>
+  <g class="ok" transform="translate(1008 150)"><rect width="116" height="46" rx="4"/><text x="58" y="29">✓ да *</text></g>
+  <g class="ok" transform="translate(760 204)"><rect width="116" height="46" rx="4"/><text x="58" y="29">✓ да</text></g>
+  <g class="ok" transform="translate(884 204)"><rect width="116" height="46" rx="4"/><text x="58" y="29">✓ да</text></g>
+  <g class="ok" transform="translate(1008 204)"><rect width="116" height="46" rx="4"/><text x="58" y="29">✓ да *</text></g>
+  <g class="ok" transform="translate(760 258)"><rect width="116" height="46" rx="4"/><text x="58" y="29">✓ да</text></g>
+  <g class="ok" transform="translate(884 258)"><rect width="116" height="46" rx="4"/><text x="58" y="29">✓ да</text></g>
+  <g class="ok" transform="translate(1008 258)"><rect width="116" height="46" rx="4"/><text x="58" y="29">✓ да *</text></g>
+  <g class="ok" transform="translate(760 312)"><rect width="116" height="46" rx="4"/><text x="58" y="29">✓ да</text></g>
+  <g class="ok" transform="translate(884 312)"><rect width="116" height="46" rx="4"/><text x="58" y="29">✓ да</text></g>
+  <g class="ok" transform="translate(1008 312)"><rect width="116" height="46" rx="4"/><text x="58" y="29">✓ да *</text></g>
+
+  <text class="note" x="40" y="400">* Со второго соединения: первое без ML-KEM сервер отклоняет, ядро запоминает это и повторяет с ML-KEM.</text>
+  <text class="note" x="40" y="426">Настройки по умолчанию, локальный стенд: VLESS + REALITY без flow. Mihomo проверен 28.09.2026 только с target с ML-KEM, ветка Veles 07.10.2026 с четырьмя target.</text>
+  <text class="note" x="40" y="452">В Mihomo есть ручная настройка support-x25519mlkem768, она помогает не на всех версиях: полная таблица в BADVPN.md.</text>
+</svg>

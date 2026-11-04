@@ -1,0 +1,53 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 520" role="img" aria-labelledby="t d">
+  <title id="t">Что Veles добавляет к Mihomo</title>
+  <desc id="d">19 патчей: маскировка 7, транспорт и скорость 5, серверная часть 7.</desc>
+  <style>
+    :root { --bg:#f6f3ea; --line:#ddd6c3; --ink:#23291f; --muted:#5d6455; --accent:#a85f00; --chip:#efe6d2; }
+    @media (prefers-color-scheme: dark) { :root { --bg:#161a14; --line:#30372b; --ink:#f0ece0; --muted:#a3aa98; --accent:#e8a33d; --chip:#2a2a1c; } }
+    text { font-family: -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; fill: var(--ink); }
+    .h { font-size: 28px; font-weight: 700; }
+    .g { font-size: 21px; font-weight: 700; }
+    .c { font-size: 15px; fill: var(--muted); }
+    .i { font-size: 16px; }
+    .id { font-size: 13px; font-weight: 700; fill: var(--accent); text-anchor: middle; }
+    .chip { fill: var(--chip); }
+    .base { font-size: 16px; fill: var(--muted); text-anchor: middle; }
+  </style>
+  <rect x="1" y="1" width="1198" height="518" rx="16" fill="var(--bg)" stroke="var(--line)" stroke-width="2"/>
+  <text class="h" x="40" y="54">Что добавлено к Mihomo</text>
+
+  <text class="g" x="40" y="100">Маскировка</text><text class="c" x="40" y="124">7 патчей</text>
+  <g transform="translate(40 142)">
+    <rect class="chip" width="42" height="24" rx="4"/><text class="id" x="21" y="17">P1</text><text class="i" x="54" y="18">Версия клиента 26.10.21</text>
+    <g transform="translate(0 40)"><rect class="chip" width="42" height="24" rx="4"/><text class="id" x="21" y="17">P2</text><text class="i" x="54" y="18">Firefox 148 и Safari 26.3</text></g>
+    <g transform="translate(0 80)"><rect class="chip" width="42" height="24" rx="4"/><text class="id" x="21" y="17">P3</text><text class="i" x="54" y="18">Своя версия на каждый прокси</text></g>
+    <g transform="translate(0 120)"><rect class="chip" width="42" height="24" rx="4"/><text class="id" x="21" y="17">P4</text><text class="i" x="54" y="18">ML-KEM только по запросу</text></g>
+    <g transform="translate(0 160)"><rect class="chip" width="42" height="24" rx="4"/><text class="id" x="21" y="17">P6</text><text class="i" x="54" y="18">Сам подбирает ML-KEM</text></g>
+    <g transform="translate(0 200)"><rect class="chip" width="42" height="24" rx="4"/><text class="id" x="21" y="17">P7</text><text class="i" x="54" y="18">Отдельный отпечаток для ML-KEM</text></g>
+    <g transform="translate(0 240)"><rect class="chip" width="42" height="24" rx="4"/><text class="id" x="21" y="17">P19</text><text class="i" x="54" y="18">Нарезка ClientHello</text></g>
+  </g>
+
+  <text class="g" x="430" y="100">Транспорт и скорость</text><text class="c" x="430" y="124">5 патчей</text>
+  <g transform="translate(430 142)">
+    <rect class="chip" width="42" height="24" rx="4"/><text class="id" x="21" y="17">P5</text><text class="i" x="54" y="18">XHTTP: отправка параллельно</text>
+    <g transform="translate(0 40)"><rect class="chip" width="42" height="24" rx="4"/><text class="id" x="21" y="17">P8</text><text class="i" x="54" y="18">XHTTP: скорость не ждёт ответов</text></g>
+    <g transform="translate(0 80)"><rect class="chip" width="42" height="24" rx="4"/><text class="id" x="21" y="17">P9</text><text class="i" x="54" y="18">Транспорт xdrive через облако</text></g>
+    <g transform="translate(0 120)"><rect class="chip" width="42" height="24" rx="4"/><text class="id" x="21" y="17">P12</text><text class="i" x="54" y="18">Запись пачками через writev</text></g>
+    <g transform="translate(0 160)"><rect class="chip" width="42" height="24" rx="4"/><text class="id" x="21" y="17">P15</text><text class="i" x="54" y="18">Xray Mux: mux.cool и XUDP</text></g>
+  </g>
+
+  <text class="g" x="820" y="100">Серверная часть</text><text class="c" x="820" y="124">7 патчей</text>
+  <g transform="translate(820 142)">
+    <rect class="chip" width="42" height="24" rx="4"/><text class="id" x="21" y="17">P10</text><text class="i" x="54" y="18">Трафик по каждому пользователю</text>
+    <g transform="translate(0 40)"><rect class="chip" width="42" height="24" rx="4"/><text class="id" x="21" y="17">P11</text><text class="i" x="54" y="18">gRPC API, совместимый с Xray</text></g>
+    <g transform="translate(0 80)"><rect class="chip" width="42" height="24" rx="4"/><text class="id" x="21" y="17">P13</text><text class="i" x="54" y="18">Защита до авторизации клиента</text></g>
+    <g transform="translate(0 120)"><rect class="chip" width="42" height="24" rx="4"/><text class="id" x="21" y="17">P14</text><text class="i" x="54" y="18">Страница для чужих запросов</text></g>
+    <g transform="translate(0 160)"><rect class="chip" width="42" height="24" rx="4"/><text class="id" x="21" y="17">P16</text><text class="i" x="54" y="18">/metrics, /healthz, /events</text></g>
+    <g transform="translate(0 200)"><rect class="chip" width="42" height="24" rx="4"/><text class="id" x="21" y="17">P17</text><text class="i" x="54" y="18">Защита контроллера</text></g>
+    <g transform="translate(0 240)"><rect class="chip" width="42" height="24" rx="4"/><text class="id" x="21" y="17">P18</text><text class="i" x="54" y="18">Лимит IP на пользователя</text></g>
+  </g>
+
+  <line x1="40" y1="424" x2="1160" y2="424" stroke="var(--accent)" stroke-width="3"/>
+  <text class="base" x="600" y="460">Основа: Mihomo v1.19.33, без изменений в остальном</text>
+  <text class="base" x="600" y="488" font-size="15">Обычный Mihomo неизвестные ключи пропускает, поэтому один шаблон подписки подходит обоим</text>
+</svg>

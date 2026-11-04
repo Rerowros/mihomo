@@ -1,0 +1,35 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 370" role="img" aria-labelledby="t d">
+  <title id="t">Отправка по XHTTP packet-up</title>
+  <desc id="d">Тестовый сервер с ответом через 150 мс, запросы по 64 КБ. Без патчей 3,4 Мбит/с. Veles с интервалом 30 мс 13,2 Мбит/с. Veles без интервала 54,9 Мбит/с.</desc>
+  <style>
+    :root { --bg:#f6f3ea; --line:#ddd6c3; --ink:#23291f; --muted:#5d6455; --accent:#a85f00; --base:#8a8f80; }
+    @media (prefers-color-scheme: dark) { :root { --bg:#161a14; --line:#30372b; --ink:#f0ece0; --muted:#a3aa98; --accent:#e8a33d; --base:#7c8374; } }
+    text { font-family: -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; fill: var(--ink); }
+    .h { font-size: 28px; font-weight: 700; }
+    .row { font-size: 18px; }
+    .sub { font-size: 15px; fill: var(--muted); }
+    .val { font-size: 22px; font-weight: 700; }
+    .note { font-size: 15px; fill: var(--muted); }
+  </style>
+  <rect x="1" y="1" width="1198" height="368" rx="16" fill="var(--bg)" stroke="var(--line)" stroke-width="2"/>
+  <text class="h" x="40" y="54">XHTTP: скорость отправки при пинге 150 мс, Мбит/с</text>
+  <line x1="330" y1="84" x2="330" y2="288" stroke="var(--line)" stroke-width="2"/>
+
+  <text class="row" x="40" y="112">Без патчей</text>
+  <text class="sub" x="40" y="134">интервал 30 мс</text>
+  <path d="M330 100 h28.2 a4 4 0 0 1 4 4 v12 a4 4 0 0 1 -4 4 h-28.2 z" fill="var(--base)"/>
+  <text class="val" x="376" y="118">3,4</text>
+
+  <text class="row" x="40" y="182">Veles</text>
+  <text class="sub" x="40" y="204">интервал 30 мс, как по умолчанию</text>
+  <path d="M330 170 h125 a4 4 0 0 1 4 4 v12 a4 4 0 0 1 -4 4 h-125 z" fill="var(--accent)"/>
+  <text class="val" x="473" y="188">13,2</text>
+
+  <text class="row" x="40" y="252">Veles</text>
+  <text class="sub" x="40" y="274">без интервала, настройка 0</text>
+  <path d="M330 240 h546 a4 4 0 0 1 4 4 v12 a4 4 0 0 1 -4 4 h-546 z" fill="var(--accent)"/>
+  <text class="val" x="894" y="258">54,9</text>
+
+  <text class="note" x="40" y="322">Тестовый сервер: ответ через 150 мс, запросы по 64 КБ, режим packet-up, POST через HTTP/2. Реальная сеть даст другие цифры.</text>
+  <text class="note" x="40" y="346">С настоящим Xray при том же пинге и интервале 30 мс: 2,3 → 12,3 Мбит/с. Приём данных этот патч не меняет.</text>
+</svg>

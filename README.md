@@ -1,101 +1,73 @@
-<h1 align="center">
-  <img src="Meta.png" alt="Meta Kennel" width="200">
-  <br>Meta Kernel<br>
-</h1>
-
-<h3 align="center">Another Mihomo Kernel.</h3>
-
 <p align="center">
-  <a href="https://goreportcard.com/report/github.com/MetaCubeX/mihomo">
-    <img src="https://goreportcard.com/badge/github.com/MetaCubeX/mihomo?style=flat-square">
-  </a>
-  <img src="https://img.shields.io/github/go-mod/go-version/MetaCubeX/mihomo/Alpha?style=flat-square">
-  <a href="https://github.com/MetaCubeX/mihomo/releases">
-    <img src="https://img.shields.io/github/release/MetaCubeX/mihomo/all.svg?style=flat-square">
-  </a>
-  <a href="https://github.com/MetaCubeX/mihomo">
-    <img src="https://img.shields.io/badge/release-Meta-00b4f0?style=flat-square">
-  </a>
+  <img src="docs/veles/hero.svg" alt="Veles: ядро на базе Mihomo. 19 патчей, 148 коммитов поверх v1.19.33, лицензия GPL-3.0" width="100%">
 </p>
 
-## Features
+<p align="center">
+  <a href="https://github.com/Rerowros/veles/releases/tag/v1.19.33-bpn.2"><img src="https://img.shields.io/badge/версия-v1.19.33--bpn.2-a85f00?style=flat-square" alt="Версия v1.19.33-bpn.2"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/лицензия-GPL--3.0-23291f?style=flat-square" alt="Лицензия GPL-3.0"></a>
+  <a href="https://github.com/MetaCubeX/mihomo"><img src="https://img.shields.io/badge/основа-Mihomo-5d6455?style=flat-square" alt="Основа: Mihomo"></a>
+</p>
 
-- Local HTTP/HTTPS/SOCKS server with authentication support
-- VMess, VLESS, Shadowsocks, Trojan, Snell, TUIC, Hysteria protocol support
-- Built-in DNS server that aims to minimize DNS pollution attack impact, supports DoH/DoT upstream and fake IP.
-- Rules based off domains, GEOIP, IPCIDR or Process to forward packets to different nodes
-- Remote groups allow users to implement powerful rules. Supports automatic fallback, load balancing or auto select node
-  based off latency
-- Remote providers, allowing users to get node lists remotely instead of hard-coding in config
-- Netfilter TCP redirecting. Deploy Mihomo on your Internet gateway with `iptables`.
-- Comprehensive HTTP RESTful API controller
+**Veles** — форк [Mihomo](https://github.com/MetaCubeX/mihomo), ядро приложения BadVPN. Он читает те же конфиги, что и Mihomo, а добавляет три вещи: REALITY, который подключается к новым серверам Xray, быстрая отправка по XHTTP и серверная часть для нод.
 
-## Dashboard
+*English: Veles is a Mihomo fork. Same configs, plus REALITY that works with current Xray servers, faster XHTTP upload and server-side features for nodes. Patch details are in [BADVPN.md](BADVPN.md), in Russian.*
 
-A web dashboard with first-class support for this project has been created; it can be checked out at [metacubexd](https://github.com/MetaCubeX/metacubexd).
+## Чем отличается
 
-## Configration example
+<img src="docs/veles/reality-matrix.svg" alt="С настройками по умолчанию Mihomo v1.19.31 подключается только к Xray 26.3.27 и только с отпечатком. Veles подключается ко всем трём версиям Xray, к 26.9.9 со второго соединения." width="100%">
 
-Configuration example is located at [/docs/config.yaml](https://github.com/MetaCubeX/mihomo/blob/Alpha/docs/config.yaml).
+<img src="docs/veles/xhttp-upload.svg" alt="Отправка по XHTTP на тестовом сервере: без патчей 3,4 Мбит/с, Veles 13,2 Мбит/с с интервалом 30 мс и 54,9 Мбит/с без интервала." width="100%">
 
-## Docs
+<img src="docs/veles/patch-map.svg" alt="19 патчей поверх Mihomo v1.19.33: маскировка, транспорт и скорость, серверная часть." width="100%">
 
-Documentation can be found in [mihomo Docs](https://wiki.metacubex.one/).
+## Сравнение с другими ядрами
 
-## For development
+| | Veles | Mihomo v1.19.33 | Xray-core 26.10.31 |
+|---|---|---|---|
+| Конфиг в формате Clash, правила и группы | ✓ | ✓ | ✕ свой формат |
+| TUIC, AnyTLS, Mieru | ✓ | ✓ | ✕ |
+| Hysteria 2, MASQUE | ✓ | ✓ | ✓ |
+| Версия клиента в REALITY | 26.10.21, настраивается | 1.8.2, не настраивается | своя |
+| Подбор ML-KEM под сервер | ✓ сам | ✕ только вручную | не проверяли |
+| Xray Mux: mux.cool и XUDP | ✓ | ✕ | ✓ |
+| Транспорт xdrive | ✓ | ✕ | ✓ |
+| gRPC API, совместимый с Xray | ✓ | ✕ | ✓ |
+| Нарезка ClientHello | ✓ для каждого прокси | ✕ | не проверяли |
+| `/metrics` для Prometheus | ✓ | ✕ | не проверяли |
+| Лимит IP на пользователя | ✓ | ✕ | не проверяли |
 
-Requirements:
-[Go 1.20 or newer](https://go.dev/dl/)
+Сравнение составлено по исходному коду этих версий. sing-box в таблицу не вошёл: его мы не проверяли.
 
-Build mihomo:
+## Запуск
 
-```shell
-git clone https://github.com/MetaCubeX/mihomo.git
-cd mihomo && go mod download
-go build
+```sh
+go build -trimpath -ldflags "-s -w" -o veles .
+./veles -v
+./veles -d ./config-dir -f config.yaml
 ```
 
-Set go proxy if a connection to GitHub is not possible:
+Настройки те же, что у Mihomo: [документация Mihomo](https://wiki.metacubex.one). Ключи, которые есть только здесь, описаны в [COMPAT.md](COMPAT.md).
 
-```shell
-go env -w GOPROXY=https://goproxy.io,direct
-```
+Для совместимости оставлены:
 
-Build with gvisor tun stack:
+- `User-Agent: clash.meta/…`: по нему панели понимают, какой конфиг отдавать;
+- путь модуля `github.com/metacubex/mihomo`: так проще переносить новые версии Mihomo.
 
-```shell
-go build -tags with_gvisor
-```
+## Документы
 
-### IPTABLES configuration
+| Файл | Что внутри |
+|---|---|
+| [BADVPN.md](BADVPN.md) | Все патчи, замеры, как проверять и как переносить на новую версию |
+| [COMPAT.md](COMPAT.md) | Чем ключи Veles отличаются для Mihomo и Xray |
 
-Work on Linux OS which supported `iptables`
+## Авторы и лицензия
 
-```yaml
-# Enable the TPROXY listener
-tproxy-port: 9898
+Veles выпускается под лицензией [GPL-3.0](LICENSE), как и Mihomo. Проект не связан с MetaCubeX и XTLS, ошибки этой сборки направляйте сюда, а не авторам Mihomo.
 
-iptables:
-  enable: true # default is false
-  inbound-interface: eth0 # detect the inbound interface, default is 'lo'
-```
+Спасибо проектам, код которых здесь использован:
 
-## Debugging
-
-Check [wiki](https://wiki.metacubex.one/api/#debug) to get an instruction on using debug
-API.
-
-## Credits
-
-- [Dreamacro/clash](https://github.com/Dreamacro/clash)
-- [SagerNet/sing-box](https://github.com/SagerNet/sing-box)
-- [riobard/go-shadowsocks2](https://github.com/riobard/go-shadowsocks2)
-- [v2ray/v2ray-core](https://github.com/v2ray/v2ray-core)
-- [WireGuard/wireguard-go](https://github.com/WireGuard/wireguard-go)
-- [yaling888/clash-plus-pro](https://github.com/yaling888/clash)
-
-## License
-
-This software is released under the GPL-3.0 license.
-
-**In addition, any downstream projects not affiliated with `MetaCubeX` shall not contain the word `mihomo` in their names.**
+- [MetaCubeX/mihomo](https://github.com/MetaCubeX/mihomo): основа ядра;
+- [legiz-ru/Prizrak-Core](https://github.com/legiz-ru/Prizrak-Core): P1 и P15;
+- [Nemu-x/ClashFest](https://github.com/Nemu-x/ClashFest): идея P6;
+- [getmikan/Citrus](https://github.com/getmikan/Citrus): P12, P13, P14, P16 и P17;
+- [refraction-networking/utls](https://github.com/refraction-networking/utls) и [metacubex/utls](https://github.com/metacubex/utls): отпечатки TLS.
