@@ -2,8 +2,8 @@
   <title id="t">Отправка по XHTTP packet-up</title>
   <desc id="d">Тестовый сервер с ответом через 150 мс, запросы по 64 КБ. Без патчей 3,4 Мбит/с. Veles с интервалом 30 мс 13,2 Мбит/с. Veles без интервала 54,9 Мбит/с.</desc>
   <style>
-    :root { --bg:#f6f3ea; --line:#ddd6c3; --ink:#23291f; --muted:#5d6455; --accent:#a85f00; --base:#8a8f80; }
-    @media (prefers-color-scheme: dark) { :root { --bg:#161a14; --line:#30372b; --ink:#f0ece0; --muted:#a3aa98; --accent:#e8a33d; --base:#7c8374; } }
+    :root { --bg:#f6f3ea; --line:#ddd6c3; --ink:#23291f; --muted:#5d6455; --accent:#a85f00; --base:#767c6c; }
+    @media (prefers-color-scheme: dark) { :root { --bg:#161a14; --line:#30372b; --ink:#f0ece0; --muted:#a3aa98; --accent:#e09a33; --base:#7c8374; } }
     text { font-family: -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; fill: var(--ink); }
     .h { font-size: 28px; font-weight: 700; }
     .row { font-size: 18px; }
