@@ -48,6 +48,6 @@
   </g>
 
   <line x1="40" y1="424" x2="1160" y2="424" stroke="var(--accent)" stroke-width="3"/>
-  <text class="base" x="600" y="460">Основа: Mihomo v1.19.33, без изменений в остальном</text>
-  <text class="base" x="600" y="488" font-size="15">Обычный Mihomo неизвестные ключи пропускает, поэтому один шаблон подписки подходит обоим</text>
+  <text class="base" x="600" y="460">Основа: Mihomo v1.19.33</text>
+  <text class="base" x="600" y="488" font-size="15">Обычный Mihomo ключи Veles молча пропускает, подробности в COMPAT.md</text>
 </svg>

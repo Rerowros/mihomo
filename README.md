@@ -3,12 +3,12 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/Rerowros/veles/releases/tag/v1.19.33-bpn.2"><img src="https://img.shields.io/badge/версия-v1.19.33--bpn.2-a85f00?style=flat-square" alt="Версия v1.19.33-bpn.2"></a>
+  <a href="https://github.com/Rerowros/veles/tree/v1.19.33-bpn.2"><img src="https://img.shields.io/badge/версия-v1.19.33--bpn.2-a85f00?style=flat-square" alt="Версия v1.19.33-bpn.2"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/лицензия-GPL--3.0-23291f?style=flat-square" alt="Лицензия GPL-3.0"></a>
   <a href="https://github.com/MetaCubeX/mihomo"><img src="https://img.shields.io/badge/основа-Mihomo-5d6455?style=flat-square" alt="Основа: Mihomo"></a>
 </p>
 
-**Veles** — форк [Mihomo](https://github.com/MetaCubeX/mihomo), ядро приложения BadVPN. Он читает те же конфиги, что и Mihomo, а добавляет три вещи: REALITY, который подключается к новым серверам Xray, быстрая отправка по XHTTP и серверная часть для нод.
+**Veles** — форк [Mihomo](https://github.com/MetaCubeX/mihomo), ядро приложения BadVPN. Формат конфига тот же, что у Mihomo, а сверху добавлены три вещи: REALITY, который подключается к новым серверам Xray, быстрая отправка по XHTTP и серверная часть для нод.
 
 *English: Veles is a Mihomo fork. Same configs, plus REALITY that works with current Xray servers, faster XHTTP upload and server-side features for nodes. Patch details are in [BADVPN.md](BADVPN.md), in Russian.*
 
@@ -47,6 +47,11 @@ go build -trimpath -ldflags "-s -w" -o veles .
 ```
 
 Настройки те же, что у Mihomo: [документация Mihomo](https://wiki.metacubex.one). Ключи, которые есть только здесь, описаны в [COMPAT.md](COMPAT.md).
+
+Два отличия от Mihomo, о которых стоит знать заранее:
+
+- без `secret` контроллер на сетевом адресе не запустится. Обойти можно настройкой `external-controller-allow-insecure`;
+- неверное значение в ключе Veles даёт ошибку всего конфига, а не пропускается.
 
 Для совместимости оставлены:
 
