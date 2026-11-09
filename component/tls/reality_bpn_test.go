@@ -22,7 +22,7 @@ func TestBPNFingerprintVersions(t *testing.T) {
 	// Guards against Go MVS silently resolving metacubex/utls back to v1.8.7
 	// (Firefox 120 / Safari 16) in a consumer module.
 	for name, want := range map[string]string{
-		"chrome":  "133",
+		"chrome":  "155", // P20
 		"firefox": "148",
 		"safari":  "26.3",
 		"edge":    "85",
