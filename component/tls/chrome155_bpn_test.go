@@ -13,7 +13,7 @@ import (
 	utls "github.com/metacubex/utls"
 )
 
-// BadVPN P20 (see BADVPN.md): "chrome" sends the Chrome 155 ClientHello.
+// BadVPN P20: "chrome" sends the Chrome 155 ClientHello.
 // testdata/chrome155_clienthello.hex is the first TLS record of a fresh
 // connection of Google Chrome 155.0.8059.40 to www.example.com, taken from
 // refraction-networking/utls 6ebdceb2 (testdata/chrome155_clienthello.md
@@ -197,8 +197,8 @@ func TestBPNChrome155MatchesBrowserCapture(t *testing.T) {
 					}
 				}
 
-				// signature_algorithms must start with a GREASE value: utls of
-				// this fork does not fill it in, chrome155Spec does.
+				// signature_algorithms must start with a GREASE value: the utls
+				// in use does not fill it in, chrome155Spec does.
 				if sig := got.extensions[extSigAlgs]; !isGREASE(binary.BigEndian.Uint16(sig[2:])) {
 					t.Fatalf("signature_algorithms starts with %x, want GREASE", sig[2:4])
 				}

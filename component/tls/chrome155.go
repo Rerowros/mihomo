@@ -14,7 +14,7 @@ import (
 // Xray-core 26.11.9 made hellochrome_155 its default fingerprint
 // (XTLS/Xray-core#7135); the profile itself comes from
 // refraction-networking/utls 6ebdceb2, verified there against a capture of
-// Chrome 155.0.8059.40. metacubex/utls (the fork this core builds on) stops at
+// Chrome 155.0.8059.40. metacubex/utls (the utls this core builds on) stops at
 // Chrome 133, so the spec lives here and is applied through HelloCustom until
 // that fork ships HelloChrome_155.
 //
@@ -85,7 +85,7 @@ func chrome155TrustAnchorsData() []byte {
 
 // chrome155Spec returns a fresh spec: utls mutates it per connection.
 func chrome155Spec() utls.ClientHelloSpec {
-	// utls of this fork replaces GREASE placeholders in cipher suites, groups,
+	// The utls in use replaces GREASE placeholders in cipher suites, groups,
 	// key shares and versions but leaves signature_algorithms alone, so the
 	// value is drawn here. BoringSSL draws every GREASE value independently.
 	greaseSigScheme := utls.SignatureScheme(uint16(randv2.IntN(16))*0x1010 + 0x0a0a)
