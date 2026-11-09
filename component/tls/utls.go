@@ -28,7 +28,7 @@ func Client(c net.Conn, config *utls.Config) *Conn {
 }
 
 func UClient(c net.Conn, config *utls.Config, fingerprint UClientHelloID) *UConn {
-	return utls.UClient(c, config, fingerprint)
+	return uClient(c, config, fingerprint) // BadVPN P20: knows HelloChrome155
 }
 
 func Server(c net.Conn, config *utls.Config) *Conn {
@@ -44,7 +44,7 @@ func NewListener(inner net.Listener, config *Config) net.Listener {
 // 26.9.8 on reject a hello without it, and a fingerprint without the share
 // cannot be used for a REALITY handshake that must offer ML-KEM.
 func FingerprintSupportsX25519MLKEM768(id UClientHelloID) bool {
-	spec, err := utls.UTLSIdToSpec(id)
+	spec, err := fingerprintSpec(id)
 	if err != nil {
 		return false
 	}
@@ -99,7 +99,7 @@ var randomFingerprint = once.OnceValue(func() UClientHelloID {
 })
 
 var fingerprints = map[string]UClientHelloID{
-	"chrome":  utls.HelloChrome_Auto,
+	"chrome":  HelloChromeAuto, // BadVPN P20: Chrome 155, as Xray >= 26.11.9
 	"firefox": utls.HelloFirefox_Auto,
 	"safari":  utls.HelloSafari_Auto,
 	"ios":     utls.HelloIOS_Auto,
@@ -111,6 +111,8 @@ var fingerprints = map[string]UClientHelloID{
 
 	// classical fingerprints without X25519MLKEM768
 	"chrome120":  utls.HelloChrome_120,
+	"chrome133":  utls.HelloChrome_133, // BadVPN P20: what "chrome" was before
+	"chrome155":  HelloChrome155,
 	"firefox120": utls.HelloFirefox_120,
 	"safari16":   utls.HelloSafari_16_0,
 

@@ -209,7 +209,7 @@ func GetRealityConn(ctx context.Context, conn net.Conn, fingerprint UClientHello
 			VerifyConnection:       verifier.VerifyConnection,
 		}
 
-		uConn := utls.UClient(conn, uConfig, fingerprint)
+		uConn := UClient(conn, uConfig, fingerprint)
 		verifier.UConn = uConn
 		err := uConn.BuildHandshakeState()
 		if err != nil {
@@ -220,9 +220,9 @@ func GetRealityConn(ctx context.Context, conn net.Conn, fingerprint UClientHello
 		// (edge, ios, android, chrome120...): chrome is the only hello that can
 		// still reach that server. An explicit support-x25519mlkem768 keeps the
 		// configured fingerprint, as before.
-		if useMLKEM && adaptive && !realityHasMLKEMShare(uConn) && fingerprint.Client != utls.HelloChrome_Auto.Client {
+		if useMLKEM && adaptive && !realityHasMLKEMShare(uConn) && fingerprint.Client != HelloChromeAuto.Client {
 			log.Debugln("REALITY %v: %s fingerprint has no X25519MLKEM768 key share, using chrome", conn.RemoteAddr(), fingerprint.Client)
-			fingerprint = utls.HelloChrome_Auto
+			fingerprint = HelloChromeAuto
 			continue
 		}
 
