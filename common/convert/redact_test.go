@@ -31,3 +31,25 @@ func TestBadVlessLinkIsNotLoggedWithCredentials(t *testing.T) {
 		t.Fatal("no log line")
 	}
 }
+
+func TestBadVmessLinkIsNotLoggedWithCredentials(t *testing.T) {
+	sub := log.Subscribe()
+	defer log.UnSubscribe(sub)
+
+	// Xray VMessAEAD link without a port: handleVShareLink fails after the
+	// link was parsed.
+	link := "vmess://11111111-2222-3333-4444-555555555555@example.com?encryption=auto#bad-node"
+	go func() { _, _ = ConvertsV2Ray([]byte(link)) }()
+
+	select {
+	case event := <-sub:
+		if strings.Contains(event.Payload, "11111111-2222") {
+			t.Fatalf("log line leaks the UUID: %s", event.Payload)
+		}
+		if !strings.Contains(event.Payload, "example.com") || !strings.Contains(event.Payload, "bad-node") {
+			t.Fatalf("log line lost the server or name: %s", event.Payload)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("no log line")
+	}
+}
