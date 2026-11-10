@@ -1,7 +1,9 @@
-//go:build !android && !ios
+//go:build linux && !android
 
 // Package gcballast raises the garbage collector's heap goal of a server
-// build. Importing it is enough.
+// build. Importing it is enough. Only Linux builds other than Android get the
+// ballast: server nodes run there; clients on Windows, macOS and mobile do not
+// need it (gcballast_other.go).
 //
 // Ported from getmikan/Citrus component/gcballast/gcballast.go (GPL-3.0).
 package gcballast
