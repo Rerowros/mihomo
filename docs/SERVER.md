@@ -56,7 +56,7 @@
 - **Память idle-соединений**: `common/net/relay_copy.go` — маленький буфер 2 КиБ, пока соединение простаивает, полные буферы при передаче; `common/net/bufconn.go` — ленивый `bufio.Reader` (4 КиБ только при первом использовании); GC ballast 8 МиБ в серверных сборках (`component/gcballast`).
 - **XHTTP**: cap 4096 неавторизованных сессий (503), 15 с на тело до download, reaper 30 с, быстрый путь карты сессий, окно seq 24, GET-uplink; P8.
 - **Xdrive**: P9 (клиент + сервер, local/Google Drive/template).
-- **REALITY**: версия 26.10.21 по умолчанию, адаптивный ML-KEM, `mlkem-client-fingerprint`; fallback rate limit уже был.
+- **REALITY**: версия 26.11.9 по умолчанию, адаптивный ML-KEM, `mlkem-client-fingerprint`; fallback rate limit уже был.
 - **Relay-batching**: `common/net/relay_batch.go` (Citrus) — read-ahead 8 буферов, один `writev(2)` на пачку, yield каждые 256 КиБ/1 мс; включается только во время передачи.
 
 ## Чего не хватает (по приоритету для ноды 1–2 vCPU / 2 ГБ)
