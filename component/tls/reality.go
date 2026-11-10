@@ -14,7 +14,9 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"io"
 	"net"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -100,15 +102,75 @@ func realityFingerprint(useMLKEM bool, fingerprint UClientHelloID, config *Reali
 // 26.9.8 on (XTLS/REALITY 8cdf7bf) reject one without it, and a server never
 // says which it is. Without support-x25519mlkem768 the outcome of each
 // handshake is remembered per server address and public key: classic first
-// (P4 behaviour), flip after one failure, pin after one success, flip a pinned
-// verdict again after realityMemoFlipAfter failures in a row (servers get
+// (P4 behaviour), flip after one refusal, pin after one success, flip a pinned
+// verdict again after realityMemoFlipAfter refusals in a row (servers get
 // upgraded). A wrong guess costs one failed connection per server.
+//
+// Only a refusal counts against the variant: the server answered (a
+// ServerHello, i.e. Xray handed the hello to its target) and the handshake
+// still failed, or completed without REALITY authentication. A handshake that
+// ended before the server answered, or on a timeout, EOF or closed socket, is
+// "silent" (realityClassify): it says nothing about ML-KEM, so it does not
+// flip or unpin anything. After realityMemoFlipAfter silent handshakes in a
+// row the next attempt probes the other variant once (realityChooseMLKEM): its
+// success pins it, its failure is a stale attempt and changes nothing.
 // Adapted from the ClashFest core patch 0002 (Nemu-x, GPL-3.0).
 type realityMemoEntry struct {
 	mlkem    bool
 	pinned   bool
-	failures int
+	failures int // refusals of mlkem in a row
+	silent   int // silent handshakes with mlkem since the last answer or probe
 	flips    int
+}
+
+// realityOutcome is what a REALITY handshake says about the ML-KEM choice.
+type realityOutcome int
+
+const (
+	realityOutcomeNone    realityOutcome = iota // nothing to learn (authenticated, then failed)
+	realityOutcomeOK                            // authenticated handshake
+	realityOutcomeRefused                       // the server answered and did not let us in
+	realityOutcomeSilent                        // the network failed before an answer
+)
+
+// realityClassify maps the result of HandshakeContext to a memo outcome. err
+// is the handshake error, ctxErr the context error after it, serverHelloSeen
+// whether a ServerHello arrived, verified whether REALITY authentication
+// passed. The checks run in order; the first match wins.
+func realityClassify(err error, ctxErr error, serverHelloSeen bool, verified bool) realityOutcome {
+	switch {
+	case err == nil && verified:
+		return realityOutcomeOK
+	case err != nil && verified:
+		return realityOutcomeNone
+	case err != nil && realityNetworkFailure(err, ctxErr):
+		// Even after a ServerHello: a cut or stalled connection is not an
+		// answer about the key share.
+		return realityOutcomeSilent
+	case err != nil && !serverHelloSeen:
+		return realityOutcomeSilent
+	default:
+		// err == nil && !verified: the target's real certificate (fallback);
+		// err != nil after a ServerHello: x509, bad certificate, protocol error.
+		return realityOutcomeRefused
+	}
+}
+
+// realityNetworkFailure reports a cancelled or timed-out context, a timeout,
+// EOF or a closed connection. It deliberately does not accept every
+// *net.OpError: utls wraps a remote alert from the server in one as well.
+func realityNetworkFailure(err error, ctxErr error) bool {
+	if ctxErr != nil ||
+		errors.Is(err, context.Canceled) ||
+		errors.Is(err, context.DeadlineExceeded) ||
+		errors.Is(err, os.ErrDeadlineExceeded) ||
+		errors.Is(err, io.EOF) ||
+		errors.Is(err, io.ErrUnexpectedEOF) ||
+		errors.Is(err, net.ErrClosed) {
+		return true
+	}
+	var netErr net.Error
+	return errors.As(err, &netErr) && netErr.Timeout()
 }
 
 const realityMemoFlipAfter = 3
@@ -135,12 +197,21 @@ func realityChooseMLKEM(key string, config *RealityConfig) (mlkem bool, adaptive
 	realityMemo.Lock()
 	defer realityMemo.Unlock()
 	if entry, ok := realityMemo.entries[key]; ok {
+		if entry.silent >= realityMemoFlipAfter {
+			// One probe of the other variant; its failure is stale and
+			// leaves the entry as it is.
+			entry.silent = 0
+			return !entry.mlkem, true
+		}
 		return entry.mlkem, true
 	}
 	return false, true
 }
 
-func realityReportMLKEM(key string, mlkem bool, ok bool, remote net.Addr) {
+func realityReportMLKEM(key string, mlkem bool, outcome realityOutcome, remote net.Addr) {
+	if outcome == realityOutcomeNone {
+		return
+	}
 	realityMemo.Lock()
 	defer realityMemo.Unlock()
 	entry := realityMemo.entries[key]
@@ -148,17 +219,26 @@ func realityReportMLKEM(key string, mlkem bool, ok bool, remote net.Addr) {
 		entry = &realityMemoEntry{mlkem: mlkem}
 		realityMemo.entries[key] = entry
 	}
-	if ok {
+	if outcome == realityOutcomeOK {
 		if !entry.pinned || entry.mlkem != mlkem {
 			log.Infoln("REALITY %v: X25519MLKEM768=%v confirmed", remote, mlkem)
 		}
-		entry.mlkem, entry.pinned, entry.failures, entry.flips = mlkem, true, 0, 0
+		entry.mlkem, entry.pinned, entry.failures, entry.silent, entry.flips = mlkem, true, 0, 0, 0
+		return
+	}
+	if outcome == realityOutcomeSilent {
+		log.Debugln("REALITY %v: handshake failed before the server answered, X25519MLKEM768 memo unchanged", remote)
+		if entry.mlkem != mlkem {
+			return // a stale attempt (or a failed probe)
+		}
+		entry.silent++
 		return
 	}
 	if entry.mlkem != mlkem {
 		return // a stale attempt; the memo already moved on
 	}
 	entry.failures++
+	entry.silent = 0
 	if !entry.pinned || entry.failures >= realityMemoFlipAfter {
 		entry.mlkem, entry.pinned, entry.failures = !mlkem, false, 0
 		entry.flips++
@@ -187,9 +267,9 @@ func ResetRealityMLKEMMemo() {
 func GetRealityConn(ctx context.Context, conn net.Conn, fingerprint UClientHelloID, serverName string, realityConfig *RealityConfig) (net.Conn, error) {
 	memoKey := realityMemoKey(conn, realityConfig)
 	useMLKEM, adaptive := realityChooseMLKEM(memoKey, realityConfig)
-	report := func(ok bool) {
+	report := func(outcome realityOutcome) {
 		if adaptive {
-			realityReportMLKEM(memoKey, useMLKEM, ok, conn.RemoteAddr())
+			realityReportMLKEM(memoKey, useMLKEM, outcome, conn.RemoteAddr())
 		}
 	}
 	// Pick the ML-KEM fingerprint once, before the retry loop: the loop below
@@ -289,20 +369,18 @@ func GetRealityConn(ctx context.Context, conn net.Conn, fingerprint UClientHello
 		//log.Debugln("REALITY uConn.AuthKey: %v", authKey)
 
 		err = uConn.HandshakeContext(ctx)
+		report(realityClassify(err, ctx.Err(), uConn.HandshakeState.ServerHello != nil, verifier.verified))
 		if err != nil {
-			report(false)
 			return nil, err
 		}
 
 		log.Debugln("REALITY Authentication: %v, AEAD: %T", verifier.verified, aeadCipher)
 
 		if !verifier.verified {
-			report(false)
 			go realityClientFallback(uConn, uConfig.ServerName, fingerprint)
 			return nil, errors.New("REALITY authentication failed")
 		}
 
-		report(true)
 		return uConn, nil
 	}
 }
