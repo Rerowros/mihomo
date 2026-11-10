@@ -45,10 +45,10 @@ type RealityClientVersion [3]byte
 // Xray-core REALITY servers compare this against minClientVer. Nodes on Xray
 // >= 26.9.8 set minClientVer to 26.9.8 or newer (and such a server rejects a
 // ClientHello without X25519MLKEM768 at all, XTLS/REALITY 8cdf7bf), so the old
-// 26.3.27 default failed every handshake to a refreshed node. 26.10.21 is the
+// 26.3.27 default failed every handshake to a refreshed node. 26.11.9 is the
 // newest release tested with this core; older servers do not set maxClientVer,
 // so a newer version is accepted by them.
-var DefaultRealityClientVersion = RealityClientVersion{26, 10, 21}
+var DefaultRealityClientVersion = RealityClientVersion{26, 11, 9}
 
 // ParseRealityClientVersion parses "x.y.z" (each part 0-255).
 func ParseRealityClientVersion(s string) (RealityClientVersion, error) {
