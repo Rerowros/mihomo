@@ -60,6 +60,12 @@ func newPacketSession(
 	return s, s
 }
 
+// packetSessionQueue is how many received datagrams wait for the reader before
+// new ones are dropped. One TLS record of the carrier holds about a dozen
+// datagrams and the read loop decodes them at once, so the queue must take a
+// burst of several records: a QUIC download treats every drop as congestion.
+const packetSessionQueue = 128
+
 func makePacketSession(
 	owner sessionOwner,
 	id uint16,
@@ -73,7 +79,7 @@ func makePacketSession(
 		destination:   destination,
 		port:          port,
 		globalID:      globalID,
-		input:         make(chan packetMessage, 16),
+		input:         make(chan packetMessage, packetSessionQueue),
 		done:          make(chan struct{}),
 		readDeadline:  deadline.MakePipeDeadline(),
 		writeDeadline: deadline.MakePipeDeadline(),
@@ -245,6 +251,11 @@ func (s *packetSession) deliverDecodedFrame(decoded decodedFrame) error {
 		case <-s.done:
 			decoded.releasePayload()
 			return net.ErrClosed
+		default:
+			// UDP is lossy: drop the datagram instead of stalling the
+			// carrier read loop, which feeds every session on this
+			// connection, as the server side does.
+			decoded.releasePayload()
 		}
 	} else {
 		decoded.releasePayload()

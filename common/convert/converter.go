@@ -258,7 +258,9 @@ func ConvertsV2Ray(buf []byte) ([]map[string]any, error) {
 				vmess := make(map[string]any, 20)
 				err = handleVShareLink(names, urlVMess, scheme, vmess)
 				if err != nil {
-					log.Warnln("error:%s line:%s", err.Error(), line)
+					// Only the server and the name: the link's user part
+					// carries the UUID.
+					log.Warnln("skip vmess link to %s (%s): %s", urlVMess.Host, urlVMess.Fragment, err.Error())
 					continue
 				}
 				vmess["alterId"] = 0

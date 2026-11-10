@@ -13,7 +13,7 @@ import (
 )
 
 // BadVPN patch set (see BADVPN.md): REALITY must report the Xray-style client
-// version 26.10.21 (P1/P3). X25519MLKEM768 is stripped from the ClientHello
+// version 26.11.9 (P1/P3). X25519MLKEM768 is stripped from the ClientHello
 // unless reality-opts.support-x25519mlkem768 is true (P4, upstream semantics);
 // with it, the fingerprint's ML-KEM key share stays before X25519, as Xray
 // >= 26.9.8 (XTLS/REALITY 8cdf7bf) requires.
@@ -43,7 +43,7 @@ func TestBPNRealityDefaultClientVersion(t *testing.T) {
 			id, _ := GetFingerprint(name)
 			hello, privateKey := captureRealityClientHello(t, id)
 			plain := decryptRealitySessionID(t, hello, privateKey)
-			if got, want := [3]byte(plain[:3]), [3]byte{26, 10, 21}; got != want {
+			if got, want := [3]byte(plain[:3]), [3]byte{26, 11, 9}; got != want {
 				t.Fatalf("REALITY client version = %v, want %v", got, want)
 			}
 			if plain[3] != 0 {

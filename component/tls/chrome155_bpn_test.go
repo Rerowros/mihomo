@@ -2,13 +2,26 @@ package tls
 
 import (
 	"bytes"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/binary"
 	"encoding/hex"
+	"go/ast"
+	"go/parser"
+	"go/token"
+	"io"
+	"io/fs"
+	"math/big"
 	"net"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	utls "github.com/metacubex/utls"
 )
@@ -236,5 +249,145 @@ func TestBPNChrome133StillAvailable(t *testing.T) {
 func TestBPNChrome155SupportsMLKEM(t *testing.T) {
 	if !FingerprintSupportsX25519MLKEM768(HelloChrome155) {
 		t.Fatal("Chrome 155 carries an X25519MLKEM768 key share")
+	}
+}
+
+// A config with a ClientSessionCache that holds a TLS 1.3 session: utls
+// panics while building a HelloCustom hello without a pre_shared_key extension
+// in the spec (sessionController.assertCanSkip), unless resumption may be
+// skipped. The Chrome 155 spec has no such extension, like the browser's
+// first hello.
+func TestBPNChrome155WithSessionCache(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	template := &x509.Certificate{SerialNumber: big.NewInt(1), DNSNames: []string{"example.com"}, NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour)}
+	der, err := x509.CreateCertificate(rand.Reader, template, template, &key.PublicKey, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		server := tls.Server(conn, &tls.Config{Certificates: []tls.Certificate{{Certificate: [][]byte{der}, PrivateKey: key}}})
+		if server.Handshake() == nil {
+			_, _ = server.Write([]byte{1})
+			_, _ = io.Copy(io.Discard, server)
+		}
+	}()
+
+	cache := utls.NewLRUClientSessionCache(1)
+	config := &utls.Config{ServerName: "example.com", InsecureSkipVerify: true, ClientSessionCache: cache}
+	conn, err := net.Dial("tcp", ln.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
+	first := UClient(conn, config, HelloChrome155)
+	if err := first.Handshake(); err != nil {
+		t.Fatalf("first handshake: %v", err)
+	}
+	if _, err := io.ReadFull(first, make([]byte, 1)); err != nil { // processes the session ticket
+		t.Fatalf("read: %v", err)
+	}
+	_ = first.Close()
+	if _, ok := cache.Get("example.com"); !ok {
+		t.Fatal("no TLS 1.3 session in the cache after the first connection")
+	}
+
+	client, server := net.Pipe()
+	defer client.Close()
+	defer server.Close()
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				t.Fatalf("BuildHandshakeState with a cached session panicked: %v", r)
+			}
+		}()
+		uConn := UClient(client, config, HelloChrome155)
+		if err := uConn.BuildHandshakeState(); err != nil {
+			t.Fatalf("BuildHandshakeState with a cached session: %v", err)
+		}
+		if _, ok := parseClientHello(t, uConn.HandshakeState.Hello.Raw).extensions[extensionTrustAnchors]; !ok {
+			t.Fatal("hello with a session cache is not Chrome 155")
+		}
+	}()
+	if config.PreferSkipResumptionOnNilExtension {
+		t.Fatal("UClient changed the caller's config")
+	}
+}
+
+// Every utls client outside component/tls goes through tlsC.UClient: a direct
+// utls.UClient does not know the Chrome 155 profile (P20).
+func TestBPNNoDirectUClientOutsideTLSPackage(t *testing.T) {
+	const utlsPath = "github.com/metacubex/utls"
+	allowed := map[string]bool{} // slash paths from the module root; none today
+	root, err := filepath.Abs(filepath.Join("..", ".."))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "go.mod")); err != nil {
+		t.Fatalf("module root not found: %v", err)
+	}
+	checked := 0
+	err = filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, _ := filepath.Rel(root, path)
+		rel = filepath.ToSlash(rel)
+		if d.IsDir() {
+			switch {
+			case rel != "." && (strings.HasPrefix(d.Name(), ".") || d.Name() == "testdata" || d.Name() == "vendor"):
+				return filepath.SkipDir
+			case rel == "component/tls":
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !strings.HasSuffix(rel, ".go") || strings.HasSuffix(rel, "_test.go") || allowed[rel] {
+			return nil
+		}
+		file, err := parser.ParseFile(token.NewFileSet(), path, nil, parser.SkipObjectResolution)
+		if err != nil {
+			return err
+		}
+		checked++
+		name := ""
+		for _, imp := range file.Imports {
+			if strings.Trim(imp.Path.Value, `"`) == utlsPath {
+				name = "tls" // the package name of metacubex/utls
+				if imp.Name != nil {
+					name = imp.Name.Name
+				}
+			}
+		}
+		if name == "" {
+			return nil
+		}
+		ast.Inspect(file, func(n ast.Node) bool {
+			if sel, ok := n.(*ast.SelectorExpr); ok && sel.Sel.Name == "UClient" {
+				if x, ok := sel.X.(*ast.Ident); ok && x.Name == name {
+					t.Errorf("%s calls %s.UClient directly; use tlsC.UClient", rel, name)
+				}
+			}
+			return true
+		})
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if checked < 100 {
+		t.Fatalf("only %d files checked: wrong module root?", checked)
 	}
 }

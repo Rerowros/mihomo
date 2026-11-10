@@ -61,8 +61,9 @@ func (o RealityOptions) Parse() (*tlsC.RealityConfig, error) {
 			if !ok {
 				return nil, fmt.Errorf("invalid mlkem-client-fingerprint %q", o.MLKEMClientFingerprint)
 			}
-			if !tlsC.FingerprintSupportsX25519MLKEM768(fingerprint) {
-				return nil, fmt.Errorf("mlkem-client-fingerprint %q has no X25519MLKEM768 key share", o.MLKEMClientFingerprint)
+			fingerprint, err = realityMLKEMFingerprint(o.MLKEMClientFingerprint, fingerprint)
+			if err != nil {
+				return nil, err
 			}
 			config.MLKEMFingerprint = &fingerprint
 		}
@@ -77,4 +78,19 @@ func (o RealityOptions) Parse() (*tlsC.RealityConfig, error) {
 		return config, nil
 	}
 	return nil, nil
+}
+
+// realityMLKEMFingerprint checks the fingerprint picked for
+// mlkem-client-fingerprint. "random" is one pick per process and may land on
+// a fingerprint without an X25519MLKEM768 key share (ios): use chrome then
+// instead of failing the whole config on some starts. A named fingerprint
+// without the key share is still a config error.
+func realityMLKEMFingerprint(name string, picked tlsC.UClientHelloID) (tlsC.UClientHelloID, error) {
+	if tlsC.FingerprintSupportsX25519MLKEM768(picked) {
+		return picked, nil
+	}
+	if name == "random" {
+		return tlsC.HelloChromeAuto, nil
+	}
+	return tlsC.UClientHelloID{}, fmt.Errorf("mlkem-client-fingerprint %q has no X25519MLKEM768 key share", name)
 }
