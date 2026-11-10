@@ -299,9 +299,11 @@ func GetRealityConn(ctx context.Context, conn net.Conn, fingerprint UClientHello
 		// P6: the memo wants the hybrid share but this fingerprint has none
 		// (edge, ios, android, chrome120...): chrome is the only hello that can
 		// still reach that server. An explicit support-x25519mlkem768 keeps the
-		// configured fingerprint, as before.
-		if useMLKEM && adaptive && !realityHasMLKEMShare(uConn) && fingerprint.Client != HelloChromeAuto.Client {
-			log.Debugln("REALITY %v: %s fingerprint has no X25519MLKEM768 key share, using chrome", conn.RemoteAddr(), fingerprint.Client)
+		// configured fingerprint, as before. The whole ID is compared: chrome120
+		// has the same Client name as chrome. HelloChromeAuto carries the share,
+		// and after the swap fingerprint == HelloChromeAuto, so this runs once.
+		if useMLKEM && adaptive && !realityHasMLKEMShare(uConn) && fingerprint != HelloChromeAuto {
+			log.Debugln("REALITY %v: %s %s fingerprint has no X25519MLKEM768 key share, using chrome", conn.RemoteAddr(), fingerprint.Client, fingerprint.Version)
 			fingerprint = HelloChromeAuto
 			continue
 		}

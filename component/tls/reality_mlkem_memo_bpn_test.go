@@ -461,10 +461,11 @@ func TestBPNRealityMLKEMMemoIgnoresSilentServer(t *testing.T) {
 // A learned "needs ML-KEM" verdict must reach the wire. The first attempt is
 // classic and is refused by a plain TLS site (what Xray >= 26.9.8 does with a
 // classic hello: it hands it to the target). For a fingerprint with the share
-// (firefox) the next hello keeps it; for one without it (edge) the hello is
-// swapped for chrome, the only one that can pass such a server.
+// (firefox) the next hello keeps it; for one without it (edge, and chrome120,
+// which shares the Client name with chrome) the hello is swapped for chrome,
+// the only one that can pass such a server.
 func TestBPNRealityMLKEMMemoReachesClientHello(t *testing.T) {
-	for _, name := range []string{"firefox", "edge"} {
+	for _, name := range []string{"firefox", "edge", "chrome120"} {
 		t.Run(name, func(t *testing.T) {
 			ResetRealityMLKEMMemo()
 			t.Cleanup(ResetRealityMLKEMMemo)
