@@ -73,6 +73,47 @@ func TestBPNRealityOptionsMLKEMClientFingerprint(t *testing.T) {
 	}
 }
 
+func TestBPNRealityMLKEMFingerprintRandom(t *testing.T) {
+	ios, _ := tlsC.GetFingerprint("ios")
+	if tlsC.FingerprintSupportsX25519MLKEM768(ios) {
+		t.Skip("ios got an X25519MLKEM768 key share, nothing to substitute")
+	}
+
+	// "random" landed on ios: chrome instead of a config error.
+	got, err := realityMLKEMFingerprint("random", ios)
+	if err != nil {
+		t.Fatalf("random -> ios rejected: %v", err)
+	}
+	if got.Client != tlsC.HelloChromeAuto.Client || got.Version != tlsC.HelloChromeAuto.Version {
+		t.Fatalf("random -> ios gave %v, want chrome", got)
+	}
+
+	// "random" landed on a fingerprint with ML-KEM: kept as is.
+	firefox, _ := tlsC.GetFingerprint("firefox")
+	got, err = realityMLKEMFingerprint("random", firefox)
+	if err != nil || got.Client != firefox.Client || got.Version != firefox.Version {
+		t.Fatalf("random -> firefox gave %v, %v", got, err)
+	}
+
+	// A named fingerprint without ML-KEM stays an error.
+	if _, err = realityMLKEMFingerprint("ios", ios); err == nil {
+		t.Fatal("named ios without X25519MLKEM768 accepted")
+	}
+
+	privateKey, err := ecdh.X25519().GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	publicKey := base64.RawURLEncoding.EncodeToString(privateKey.PublicKey().Bytes())
+	config, err := RealityOptions{PublicKey: publicKey, MLKEMClientFingerprint: "random"}.Parse()
+	if err != nil {
+		t.Fatalf("mlkem-client-fingerprint random: %v", err)
+	}
+	if config.MLKEMFingerprint == nil || !tlsC.FingerprintSupportsX25519MLKEM768(*config.MLKEMFingerprint) {
+		t.Fatalf("mlkem-client-fingerprint random gave %v without X25519MLKEM768", config.MLKEMFingerprint)
+	}
+}
+
 func TestBPNRealityOptionsSupportX25519MLKEM768(t *testing.T) {
 	privateKey, err := ecdh.X25519().GenerateKey(rand.Reader)
 	if err != nil {
