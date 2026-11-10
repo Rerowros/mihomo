@@ -492,3 +492,36 @@ func TestBPNRealityMLKEMMemoReachesClientHello(t *testing.T) {
 		})
 	}
 }
+
+// A success or a refusal starts the count of silent handshakes over: rare
+// timeouts on a working server must never add up to a probe.
+func TestBPNRealityMLKEMMemoSilentCountResets(t *testing.T) {
+	addr := net.Addr(bpnFakeAddr("203.0.113.1:443"))
+	for name, between := range map[string]realityOutcome{"ok": realityOutcomeOK, "refused": realityOutcomeRefused} {
+		t.Run(name, func(t *testing.T) {
+			ResetRealityMLKEMMemo()
+			t.Cleanup(ResetRealityMLKEMMemo)
+			config := bpnMemoConfig(t, false)
+			key := bpnMemoKey(t, config)
+			realityReportMLKEM(key, true, realityOutcomeOK, addr)
+			for round := 0; round < 3; round++ {
+				for i := 0; i < realityMemoFlipAfter-1; i++ {
+					realityReportMLKEM(key, true, realityOutcomeSilent, addr)
+				}
+				if !bpnChoose(t, key, config) {
+					t.Fatalf("round %d: silent handshakes separated by an answer added up to a probe", round)
+				}
+				realityReportMLKEM(key, true, between, addr)
+				if between == realityOutcomeRefused {
+					break // a second refusal would be counted towards the flip
+				}
+			}
+			for i := 0; i < realityMemoFlipAfter-1; i++ {
+				realityReportMLKEM(key, true, realityOutcomeSilent, addr)
+			}
+			if !bpnChoose(t, key, config) {
+				t.Fatal("silent handshakes before and after an answer added up to a probe")
+			}
+		})
+	}
+}

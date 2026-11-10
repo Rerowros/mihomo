@@ -365,7 +365,7 @@ func TestBPNNoDirectUClientOutsideTLSPackage(t *testing.T) {
 		name := ""
 		for _, imp := range file.Imports {
 			if strings.Trim(imp.Path.Value, `"`) == utlsPath {
-				name = "utls"
+				name = "tls" // the package name of metacubex/utls
 				if imp.Name != nil {
 					name = imp.Name.Name
 				}
