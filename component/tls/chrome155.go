@@ -177,14 +177,27 @@ func fingerprintSpec(id UClientHelloID) (utls.ClientHelloSpec, error) {
 // through UClient): utls.UClient fails to build a hello for HelloChrome155.
 func uClient(c net.Conn, config *utls.Config, fingerprint UClientHelloID) *UConn {
 	if fingerprint == HelloChrome155 {
-		uConn := utls.UClient(c, config, utls.HelloCustom)
+		customConfig := config
+		if config != nil && config.ClientSessionCache != nil && !config.SessionTicketsDisabled && !config.PreferSkipResumptionOnNilExtension {
+			// The spec has no pre_shared_key extension (neither has Chrome's
+			// first hello), and utls panics in BuildHandshakeState when a
+			// HelloCustom client finds a cached TLS 1.3 session for it. The
+			// built-in profiles skip resumption in that case; do the same. A
+			// copy, so the caller's config is left as it was.
+			customConfig = config.Clone()
+			customConfig.PreferSkipResumptionOnNilExtension = true
+		}
+		uConn := utls.UClient(c, customConfig, utls.HelloCustom)
 		spec := chrome155Spec()
 		if err := uConn.ApplyPreset(&spec); err == nil {
 			return uConn
 		} else {
-			// Only a failing random source or a malformed spec gets here; the
-			// previous chrome profile is the closest hello that still works.
-			log.Warnln("chrome 155 fingerprint: %v, using chrome 133", err)
+			// ApplyPreset fails on a config no hello can be built from (no
+			// ServerName and no InsecureSkipVerify, an empty or oversized
+			// NextProtos entry), a failing random source or a malformed spec.
+			// Chrome 133 is the closest hello; a config error then comes back
+			// from its BuildHandshakeState.
+			log.Warnln("chrome 155 fingerprint: %v, falling back to chrome 133", err)
 		}
 		fingerprint = utls.HelloChrome_133
 	}
