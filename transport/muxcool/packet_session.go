@@ -245,6 +245,11 @@ func (s *packetSession) deliverDecodedFrame(decoded decodedFrame) error {
 		case <-s.done:
 			decoded.releasePayload()
 			return net.ErrClosed
+		default:
+			// UDP is lossy: drop the datagram instead of stalling the
+			// carrier read loop, which feeds every session on this
+			// connection, as the server side does.
+			decoded.releasePayload()
 		}
 	} else {
 		decoded.releasePayload()

@@ -1,6 +1,10 @@
 package muxcool
 
 import (
+	"context"
+	"errors"
+	"fmt"
+	"io"
 	"net"
 	"net/netip"
 	"testing"
@@ -154,5 +158,95 @@ func TestPacketSessionResponseWithoutTargetUsesSessionDestination(t *testing.T) 
 	}
 	if carrier.isClosed() || worker.activeSessions() != 1 {
 		t.Fatalf("carrier closed = %t, active sessions = %d", carrier.isClosed(), worker.activeSessions())
+	}
+}
+
+// An idle UDP session must not stall the carrier read loop: datagrams past
+// its queue are dropped and the other sessions keep getting their data.
+func TestPacketSessionFullQueueDoesNotBlockOtherSessions(t *testing.T) {
+	carrier := newTestCarrier()
+	worker := newCarrierWorker(carrier, 8, 128, nil)
+	t.Cleanup(func() { worker.close(nil) })
+	packetConn, err := worker.openPacketSession("8.8.8.8", 53, [8]byte{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stream, err := worker.openSession(context.Background(), "stream.example", 443, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = stream.Close(); _ = packetConn.Close() })
+
+	queue := cap(packetConn.(*packetSession).input)
+	frames := make([][]byte, 0, queue*2+2)
+	for i := 0; i < queue*2; i++ {
+		raw, err := EncodeFrame(Frame{
+			SessionID: 1, Status: StatusKeep, Option: OptionData, Network: NetworkUDP,
+			Destination: "9.9.9.9", Port: 53, Payload: []byte(fmt.Sprintf("packet-%d", i)),
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		frames = append(frames, raw)
+	}
+	for _, frame := range []Frame{
+		{SessionID: 2, Status: StatusKeep, Option: OptionData, Payload: []byte("stream")},
+		{SessionID: 1, Status: StatusEnd},
+	} {
+		raw, err := EncodeFrame(frame)
+		if err != nil {
+			t.Fatal(err)
+		}
+		frames = append(frames, raw)
+	}
+
+	// Nobody reads the UDP session while the frames arrive.
+	streamRead := make(chan error, 1)
+	go func() {
+		for _, raw := range frames {
+			if _, err := carrier.serverWriter.Write(raw); err != nil {
+				streamRead <- err
+				return
+			}
+		}
+		got := make([]byte, len("stream"))
+		if _, err := io.ReadFull(stream, got); err != nil {
+			streamRead <- err
+			return
+		}
+		if string(got) != "stream" {
+			streamRead <- fmt.Errorf("stream = %q", got)
+			return
+		}
+		streamRead <- nil
+	}()
+	select {
+	case err := <-streamRead:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("a full UDP session queue blocked the carrier read loop")
+	}
+
+	// The queued datagrams come in order, the rest were dropped, and
+	// StatusEnd still closed the session.
+	buffer := make([]byte, 32)
+	for i := 0; i < queue; i++ {
+		_ = packetConn.SetReadDeadline(time.Now().Add(time.Second))
+		n, _, err := packetConn.ReadFrom(buffer)
+		if err != nil {
+			t.Fatalf("read datagram %d: %v", i, err)
+		}
+		if want := fmt.Sprintf("packet-%d", i); string(buffer[:n]) != want {
+			t.Fatalf("datagram %d = %q, want %q", i, buffer[:n], want)
+		}
+	}
+	_ = packetConn.SetReadDeadline(time.Now().Add(time.Second))
+	if _, _, err = packetConn.ReadFrom(buffer); !errors.Is(err, net.ErrClosed) {
+		t.Fatalf("read after StatusEnd = %v, want net.ErrClosed", err)
+	}
+	if carrier.isClosed() {
+		t.Fatal("carrier closed")
 	}
 }
