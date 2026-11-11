@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/Rerowros/veles/tree/v1.19.33-bpn.2"><img src="https://img.shields.io/badge/версия-v1.19.33--bpn.2-a85f00?style=flat-square" alt="Версия v1.19.33-bpn.2"></a>
+  <a href="https://github.com/Rerowros/veles/tree/v1.19.34-veles.1"><img src="https://img.shields.io/badge/версия-v1.19.34--veles.1-a85f00?style=flat-square" alt="Версия v1.19.34-veles.1"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/лицензия-GPL--3.0-23291f?style=flat-square" alt="Лицензия GPL-3.0"></a>
   <a href="https://github.com/MetaCubeX/mihomo"><img src="https://img.shields.io/badge/основа-Mihomo-5d6455?style=flat-square" alt="Основа: Mihomo"></a>
 </p>
@@ -51,7 +51,7 @@ go build -trimpath -ldflags "-s -w" -o veles .
 Два отличия от Mihomo, о которых стоит знать заранее:
 
 - без `secret` контроллер на сетевом адресе не запустится. Обойти можно настройкой `external-controller-allow-insecure`;
-- неверное значение в ключе Veles даёт ошибку всего конфига, а не пропускается.
+- неподдерживаемые или конфликтные значения ключей прокси Veles (`fragment-opts`, `mux.cool`, `mlkem-client-fingerprint`, `client-version`) не роняют профиль, а пропускаются с предупреждением в лог (как в оригинальном Mihomo); строгая проверка оставлена только у серверных лимитов `user-limits` и `proxy-protocol`.
 
 Для совместимости оставлены:
 
