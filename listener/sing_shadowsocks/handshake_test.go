@@ -126,3 +126,47 @@ func TestShadowsocksHandshakeDeadlineClearedAfterAuth(t *testing.T) {
 		t.Fatalf("unexpected response %q", resp)
 	}
 }
+
+func TestShadowsocksMultiUserHandshakeDeadlineClearedAfterAuth(t *testing.T) {
+	timeout := 200 * time.Millisecond
+	shortHandshakeTimeout(t, timeout)
+	l, err := New(LC.ShadowsocksServer{
+		Enable: true,
+		Listen: "127.0.0.1:0",
+		Users:  map[string]string{"alice": testPassword},
+		Cipher: testCipher,
+	}, inbound.ListenConfig{}, echoTunnel{idle: 4 * timeout})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = l.Close() })
+	raw, err := net.Dial("tcp", l.AddrList()[0].String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = raw.Close() })
+
+	method, err := shadowaead.New(testCipher, nil, testPassword)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client, err := method.DialConn(raw, M.ParseSocksaddrHostPort("1.2.3.4", 80))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.Write([]byte("hel")); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(4 * timeout)
+	if _, err := client.Write([]byte("lo")); err != nil {
+		t.Fatal(err)
+	}
+	_ = raw.SetReadDeadline(time.Now().Add(5 * time.Second))
+	resp := make([]byte, 5)
+	if _, err := io.ReadFull(client, resp); err != nil {
+		t.Fatalf("authenticated multi-user idle session was cut: %v", err)
+	}
+	if string(resp) != "hello" {
+		t.Fatalf("unexpected response %q", resp)
+	}
+}
