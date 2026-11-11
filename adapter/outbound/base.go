@@ -219,8 +219,10 @@ func (b *BasicOption) NewDialer(opts []dialer.Option) C.Dialer {
 			cDialer = dialer.NewDialer(opts...)
 		}
 	}
-	// ParseProxy has already rejected an invalid block, so the error is not expected here
-	if fragmentConfig, err := b.FragmentOpts.Parse(); err == nil {
+	// If constructed directly with an invalid block, warn and leave fragmentation off.
+	if fragmentConfig, err := b.FragmentOpts.Parse(); err != nil {
+		log.Warnln("ignore unsupported fragment-opts: %s", err.Error())
+	} else {
 		cDialer = fragment.NewDialer(cDialer, fragmentConfig)
 	}
 	return cDialer

@@ -8,6 +8,7 @@ import (
 	"github.com/metacubex/mihomo/common/structure"
 	"github.com/metacubex/mihomo/component/fragment"
 	C "github.com/metacubex/mihomo/constant"
+	"github.com/metacubex/mihomo/log"
 	"github.com/metacubex/mihomo/transport/vless"
 )
 
@@ -17,16 +18,28 @@ func ParseProxy(mapping map[string]any, options ...ProxyOption) (C.Proxy, error)
 	if !existType {
 		return nil, fmt.Errorf("missing type")
 	}
+	proxyName, _ := mapping["name"].(string)
 
-	// BadVPN P19: reject an invalid fragment-opts block at load time, not on every dial
-	var fragmentOption struct {
-		FragmentOpts fragment.Options `proxy:"fragment-opts,omitempty"`
-	}
-	if err := decoder.Decode(mapping, &fragmentOption); err != nil {
-		return nil, err
-	}
-	if _, err := fragmentOption.FragmentOpts.Parse(); err != nil {
-		return nil, err
+	// BadVPN P19: validate fragment-opts at load time; if invalid or unsupported,
+	// warn and disable fragmentation instead of failing the whole profile.
+	if _, hasFragment := mapping["fragment-opts"]; hasFragment {
+		var fragmentOption struct {
+			FragmentOpts fragment.Options `proxy:"fragment-opts,omitempty"`
+		}
+		fragErr := decoder.Decode(mapping, &fragmentOption)
+		if fragErr == nil {
+			_, fragErr = fragmentOption.FragmentOpts.Parse()
+		}
+		if fragErr != nil {
+			log.Warnln("[Proxy] %s: ignore unsupported fragment-opts: %s", proxyName, fragErr.Error())
+			cleaned := make(map[string]any, len(mapping))
+			for k, v := range mapping {
+				if k != "fragment-opts" {
+					cleaned[k] = v
+				}
+			}
+			mapping = cleaned
+		}
 	}
 
 	opt := applyProxyOptions(options...)
@@ -255,31 +268,15 @@ func ParseProxy(mapping map[string]any, options ...ProxyOption) (C.Proxy, error)
 	}
 
 	muxCoolOption := &outbound.MuxCoolOption{}
+	muxCoolValid := false
 	if muxMapping, muxExist := mapping["mux.cool"].(map[string]any); muxExist {
-		err = decoder.Decode(muxMapping, muxCoolOption)
-		if err != nil {
-			_ = proxy.Close()
-			return nil, err
+		if muxErr := decoder.Decode(muxMapping, muxCoolOption); muxErr != nil {
+			log.Warnln("[Proxy] %s: ignore invalid mux.cool options: %s", proxy.Name(), muxErr.Error())
+		} else {
+			muxCoolValid = true
 		}
-	}
-	if muxOption.Enabled && muxCoolOption.Enabled {
-		_ = proxy.Close()
-		return nil, fmt.Errorf("smux and mux.cool cannot be enabled together")
-	}
-	if muxCoolOption.Enabled && proxyType != "vless" {
-		// Only the VLESS outbound sends the mux command for the
-		// v1.mux.cool carrier; other outbounds would dial it as a host.
-		_ = proxy.Close()
-		return nil, fmt.Errorf("mux.cool is only supported for vless proxies, not %s", proxyType)
-	}
-	if muxCoolOption.Enabled {
-		// Vision splices the inner TLS of a single TCP connection, while a
-		// mux.cool carrier holds many sessions; a Vision server breaks mux
-		// connections that contain TCP sessions.
-		if flow, _ := mapping["flow"].(string); strings.HasPrefix(flow, vless.XRV) {
-			_ = proxy.Close()
-			return nil, fmt.Errorf("mux.cool cannot be used with VLESS flow %s: disable mux.cool or remove flow", flow)
-		}
+	} else if rawMux, muxExist := mapping["mux.cool"]; muxExist && rawMux != nil {
+		log.Warnln("[Proxy] %s: ignore non-map mux.cool option", proxy.Name())
 	}
 	if muxOption.Enabled {
 		wrapped, err := outbound.NewSingMux(*muxOption, proxy)
@@ -289,17 +286,37 @@ func ParseProxy(mapping map[string]any, options ...ProxyOption) (C.Proxy, error)
 		}
 		proxy = wrapped
 	}
-	if muxCoolOption.Enabled || muxCoolOption.MaxConcurrency < 0 || muxCoolOption.MaxConnections < 0 || muxCoolOption.MaxCarriers < 0 || muxCoolOption.XUDPConcurrency < 0 {
-		wrapped, err := outbound.NewMuxCool(*muxCoolOption, proxy)
-		if err != nil {
-			_ = proxy.Close()
-			return nil, err
+	if muxCoolValid && (muxCoolOption.Enabled || muxCoolOption.MaxConcurrency < 0 || muxCoolOption.MaxConnections < 0 || muxCoolOption.MaxCarriers < 0 || muxCoolOption.XUDPConcurrency < 0) {
+		switch {
+		case muxOption.Enabled && muxCoolOption.Enabled:
+			log.Warnln("[Proxy] %s: ignore mux.cool because smux is already enabled", proxy.Name())
+		case muxCoolOption.Enabled && proxyType != "vless":
+			// Only the VLESS outbound sends the mux command for the
+			// v1.mux.cool carrier; other outbounds would dial it as a host.
+			log.Warnln("[Proxy] %s: ignore mux.cool (only supported for vless, not %s)", proxy.Name(), proxyType)
+		case muxCoolOption.Enabled && hasVLESSVisionFlow(mapping):
+			// Vision splices the inner TLS of a single TCP connection, while a
+			// mux.cool carrier holds many sessions; a Vision server breaks mux
+			// connections that contain TCP sessions.
+			flow, _ := mapping["flow"].(string)
+			log.Warnln("[Proxy] %s: ignore mux.cool with VLESS flow %s", proxy.Name(), flow)
+		default:
+			wrapped, muxErr := outbound.NewMuxCool(*muxCoolOption, proxy)
+			if muxErr != nil {
+				log.Warnln("[Proxy] %s: ignore invalid mux.cool (%s)", proxy.Name(), muxErr.Error())
+			} else if muxCoolOption.Enabled {
+				proxy = wrapped
+			}
 		}
-		proxy = wrapped
 	}
 
 	proxy = outbound.NewAutoCloseProxyAdapter(proxy)
 	return NewProxy(proxy), nil
+}
+
+func hasVLESSVisionFlow(mapping map[string]any) bool {
+	flow, _ := mapping["flow"].(string)
+	return strings.HasPrefix(flow, vless.XRV)
 }
 
 type proxyOption struct {

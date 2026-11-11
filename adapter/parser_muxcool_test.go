@@ -2,7 +2,6 @@ package adapter
 
 import (
 	"reflect"
-	"strings"
 	"testing"
 
 	"github.com/metacubex/mihomo/adapter/outbound"
@@ -66,36 +65,30 @@ func TestParseProxyMuxCoolConfigurations(t *testing.T) {
 	}
 }
 
-func TestParseProxyRejectsInvalidMuxCoolConfigurations(t *testing.T) {
+func TestParseProxyIgnoresIncompatibleMuxCoolConfigurations(t *testing.T) {
 	tests := []struct {
 		name    string
 		mapping map[string]any
-		match   string
 	}{
 		{
 			name:    "negative concurrency",
 			mapping: vlessMapping(map[string]any{"mux.cool": map[string]any{"enabled": true, "max-concurrency": -1}}),
-			match:   "max-concurrency",
 		},
 		{
 			name:    "negative connections",
 			mapping: vlessMapping(map[string]any{"mux.cool": map[string]any{"enabled": true, "max-connections": -1}}),
-			match:   "max-connections",
 		},
 		{
 			name:    "negative carriers",
 			mapping: vlessMapping(map[string]any{"mux.cool": map[string]any{"enabled": true, "max-carriers": -1}}),
-			match:   "max-carriers",
 		},
 		{
 			name:    "negative xudp concurrency",
 			mapping: vlessMapping(map[string]any{"mux.cool": map[string]any{"enabled": true, "xudp-concurrency": -1}}),
-			match:   "xudp-concurrency",
 		},
 		{
 			name:    "unknown udp 443 policy",
 			mapping: vlessMapping(map[string]any{"mux.cool": map[string]any{"enabled": true, "xudp-proxy-udp443": "drop"}}),
-			match:   "xudp-proxy-udp443",
 		},
 		{
 			name: "smux conflict",
@@ -103,12 +96,10 @@ func TestParseProxyRejectsInvalidMuxCoolConfigurations(t *testing.T) {
 				"smux":     map[string]any{"enabled": true},
 				"mux.cool": map[string]any{"enabled": true},
 			}),
-			match: "cannot be enabled together",
 		},
 		{
 			name:    "not vless",
 			mapping: map[string]any{"name": "test", "type": "direct", "mux.cool": map[string]any{"enabled": true}},
-			match:   "only supported for vless",
 		},
 		{
 			name: "vmess",
@@ -117,18 +108,23 @@ func TestParseProxyRejectsInvalidMuxCoolConfigurations(t *testing.T) {
 				"uuid": "b831381d-6324-4d53-ad4f-8cda48b30811", "alterId": 0, "cipher": "auto",
 				"mux.cool": map[string]any{"enabled": true},
 			},
-			match: "only supported for vless",
+		},
+		{
+			name:    "scalar mux.cool",
+			mapping: vlessMapping(map[string]any{"mux.cool": "invalid"}),
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			parsed, err := ParseProxy(tt.mapping)
-			if parsed != nil {
-				_ = parsed.Close()
+			if err != nil {
+				t.Fatalf("ParseProxy returned error instead of skipping mux.cool: %v", err)
 			}
-			if err == nil || !strings.Contains(err.Error(), tt.match) {
-				t.Fatalf("error = %v, want substring %q", err, tt.match)
+			defer parsed.Close()
+			wrapped := unwrapAutoClose(t, parsed.Adapter())
+			if _, ok := wrapped.(*outbound.MuxCool); ok {
+				t.Fatalf("incompatible mux.cool configuration should not wrap proxy, got %T", wrapped)
 			}
 		})
 	}
@@ -145,18 +141,23 @@ func vlessMapping(extra map[string]any) map[string]any {
 	return mapping
 }
 
-func TestParseProxyRejectsMuxCoolWithVLESSVision(t *testing.T) {
+func TestParseProxyIgnoresMuxCoolWithVLESSVision(t *testing.T) {
 	for _, flow := range []string{"xtls-rprx-vision", "xtls-rprx-vision-udp443"} {
 		t.Run(flow, func(t *testing.T) {
 			parsed, err := ParseProxy(vlessMapping(map[string]any{
 				"flow":     flow,
 				"mux.cool": map[string]any{"enabled": true},
 			}))
-			if parsed != nil {
-				_ = parsed.Close()
+			if err != nil {
+				t.Fatalf("ParseProxy returned error instead of skipping mux.cool: %v", err)
 			}
-			if err == nil || !strings.Contains(err.Error(), "mux.cool cannot be used with VLESS flow") {
-				t.Fatalf("error = %v, want mux.cool/flow conflict", err)
+			defer parsed.Close()
+			wrapped := unwrapAutoClose(t, parsed.Adapter())
+			if _, ok := wrapped.(*outbound.MuxCool); ok {
+				t.Fatalf("mux.cool + %s should skip MuxCool wrapper, got %T", flow, wrapped)
+			}
+			if _, ok := wrapped.(*outbound.Vless); !ok {
+				t.Fatalf("adapter = %T, want *outbound.Vless", wrapped)
 			}
 		})
 	}

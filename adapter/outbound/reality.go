@@ -8,6 +8,7 @@ import (
 	"fmt"
 
 	tlsC "github.com/metacubex/mihomo/component/tls"
+	"github.com/metacubex/mihomo/log"
 )
 
 type RealityOptions struct {
@@ -59,19 +60,19 @@ func (o RealityOptions) Parse() (*tlsC.RealityConfig, error) {
 		if o.MLKEMClientFingerprint != "" {
 			fingerprint, ok := tlsC.GetFingerprint(o.MLKEMClientFingerprint)
 			if !ok {
-				return nil, fmt.Errorf("invalid mlkem-client-fingerprint %q", o.MLKEMClientFingerprint)
+				log.Warnln("REALITY: ignore unsupported mlkem-client-fingerprint %q", o.MLKEMClientFingerprint)
+			} else if fingerprint, err = realityMLKEMFingerprint(o.MLKEMClientFingerprint, fingerprint); err != nil {
+				log.Warnln("REALITY: ignore mlkem-client-fingerprint %q (%s)", o.MLKEMClientFingerprint, err.Error())
+			} else {
+				config.MLKEMFingerprint = &fingerprint
 			}
-			fingerprint, err = realityMLKEMFingerprint(o.MLKEMClientFingerprint, fingerprint)
-			if err != nil {
-				return nil, err
-			}
-			config.MLKEMFingerprint = &fingerprint
 		}
 
 		if o.ClientVersion != "" {
-			config.ClientVersion, err = tlsC.ParseRealityClientVersion(o.ClientVersion)
-			if err != nil {
-				return nil, err
+			if cv, cvErr := tlsC.ParseRealityClientVersion(o.ClientVersion); cvErr != nil {
+				log.Warnln("REALITY: ignore invalid client-version %q (%s)", o.ClientVersion, cvErr.Error())
+			} else {
+				config.ClientVersion = cv
 			}
 		}
 

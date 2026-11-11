@@ -32,8 +32,14 @@ func TestBPNRealityOptionsClientVersion(t *testing.T) {
 		t.Fatalf("client-version = %v, want 26.9.9", config.ClientVersion)
 	}
 
-	if _, err = (RealityOptions{PublicKey: publicKey, ClientVersion: "26.9"}).Parse(); err == nil {
-		t.Fatal("invalid client-version accepted")
+	// Invalid client-version warns and falls back to zero (default version)
+	// instead of breaking the whole subscription profile.
+	config, err = RealityOptions{PublicKey: publicKey, ClientVersion: "26.9"}.Parse()
+	if err != nil {
+		t.Fatalf("invalid client-version failed Parse: %v", err)
+	}
+	if config.ClientVersion != (tlsC.RealityClientVersion{}) {
+		t.Fatalf("invalid client-version = %v, want zero fallback", config.ClientVersion)
 	}
 }
 
@@ -61,15 +67,16 @@ func TestBPNRealityOptionsMLKEMClientFingerprint(t *testing.T) {
 		t.Fatalf("mlkem-client-fingerprint = %v, want firefox", config.MLKEMFingerprint)
 	}
 
-	if _, err = (RealityOptions{PublicKey: publicKey, MLKEMClientFingerprint: "no-such-browser"}).Parse(); err == nil {
-		t.Fatal("invalid mlkem-client-fingerprint accepted")
-	}
-
-	// edge has no X25519MLKEM768 key share: a handshake that must offer
-	// ML-KEM could only fall back to chrome or lose the server, so reject it
-	// at parse time instead of looping on the substitution.
-	if _, err = (RealityOptions{PublicKey: publicKey, MLKEMClientFingerprint: "edge"}).Parse(); err == nil {
-		t.Fatal("mlkem-client-fingerprint without X25519MLKEM768 accepted")
+	// Unknown or non-ML-KEM fingerprint names warn and leave MLKEMFingerprint
+	// unset (falling back to client-fingerprint) rather than breaking loading.
+	for _, bad := range []string{"no-such-browser", "edge"} {
+		config, err = RealityOptions{PublicKey: publicKey, MLKEMClientFingerprint: bad}.Parse()
+		if err != nil {
+			t.Fatalf("mlkem-client-fingerprint %q failed Parse: %v", bad, err)
+		}
+		if config.MLKEMFingerprint != nil {
+			t.Fatalf("mlkem-client-fingerprint %q set %v, want nil fallback", bad, config.MLKEMFingerprint)
+		}
 	}
 }
 
