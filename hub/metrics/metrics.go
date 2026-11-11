@@ -189,6 +189,8 @@ func writeTraffic(w writer) {
 	w.int("mihomo_upload_bytes_total", up)
 	w.family("mihomo_download_bytes_total", "counter", "Bytes received from the outbounds since start (or the last statistic reset).")
 	w.int("mihomo_download_bytes_total", down)
+	w.family("mihomo_dial_failures_total", "counter", "Outbound connection attempts that failed before establishing a tracker.")
+	w.int("mihomo_dial_failures_total", statistic.DefaultManager.FailedTotal())
 }
 
 // writeInbounds reports the open connections and the cumulative traffic of

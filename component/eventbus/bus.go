@@ -23,6 +23,7 @@ const (
 	TypeUserLimit    = "user.limit"
 	TypeUserRevoked  = "user.revoked"
 	TypeConfigReload = "config.reload"
+	TypeDialError    = "dial.error"
 )
 
 // TypeDropped is the type of the event a stream sends when events were
@@ -30,7 +31,7 @@ const (
 const TypeDropped = "dropped"
 
 // Types lists the event types that can be subscribed to.
-var Types = []string{TypeUserSession, TypeUserLimit, TypeUserRevoked, TypeConfigReload}
+var Types = []string{TypeUserSession, TypeUserLimit, TypeUserRevoked, TypeConfigReload, TypeDialError}
 
 // Mask is a set of event types.
 type Mask uint32

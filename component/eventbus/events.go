@@ -73,6 +73,22 @@ type Dropped struct {
 	Count uint64 `json:"count"`
 }
 
+// DialError is the data of a dial.error event: an outbound connection attempt
+// failed before a tracker could be established.
+type DialError struct {
+	ID          string   `json:"id"`
+	Network     string   `json:"network"`
+	Source      string   `json:"source,omitempty"`
+	Destination string   `json:"destination"`
+	Host        string   `json:"host,omitempty"`
+	Process     string   `json:"process,omitempty"`
+	Chains      []string `json:"chains"`
+	Rule        string   `json:"rule"`
+	RulePayload string   `json:"rulePayload"`
+	Error       string   `json:"error"`
+	DurationMs  int64    `json:"durationMs"`
+}
+
 // PublishConfigReload reports the result of a configuration reload.
 func PublishConfigReload(err error) {
 	if !Enabled(TypeConfigReload) {

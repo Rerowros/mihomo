@@ -472,9 +472,11 @@ func handleUDPConn(packet C.PacketAdapter) {
 
 			originMetadata := metadata  // save origin metadata
 			metadata = metadata.Clone() // don't modify PacketAdapter's metadata
+			dialStart := time.Now()
 
 			if err := sender.DoSniff(metadata); err != nil {
 				log.Warnln("[UDP] DoSniff error: %s", err.Error())
+				recordFailedDial(metadata, nil, nil, nil, err, dialStart)
 				return nil, nil, err
 			}
 
@@ -483,6 +485,7 @@ func handleUDPConn(packet C.PacketAdapter) {
 			proxy, rule, err := resolveMetadata(metadata)
 			if err != nil {
 				log.Warnln("[UDP] Parse metadata failed: %s", err.Error())
+				recordFailedDial(metadata, nil, rule, nil, err, dialStart)
 				return nil, nil, err
 			}
 
@@ -495,6 +498,7 @@ func handleUDPConn(packet C.PacketAdapter) {
 				logMetadataErr(metadata, rule, proxy, err)
 			})
 			if err != nil {
+				recordFailedDial(metadata, dialMetadata, rule, proxy, err, dialStart)
 				return nil, nil, err
 			}
 			logMetadata(metadata, rule, rawPc)
@@ -608,9 +612,11 @@ func handleTCPConn(connCtx C.ConnContext) {
 		}()
 	}
 
+	dialStart := time.Now()
 	proxy, rule, err := resolveMetadata(metadata)
 	if err != nil {
 		log.Warnln("[Metadata] parse failed: %s", err.Error())
+		recordFailedDial(metadata, nil, rule, nil, err, dialStart)
 		return
 	}
 
@@ -665,6 +671,7 @@ func handleTCPConn(connCtx C.ConnContext) {
 		logMetadataErr(metadata, rule, proxy, err)
 	})
 	if err != nil {
+		recordFailedDial(metadata, dialMetadata, rule, proxy, err, dialStart)
 		return
 	}
 	logMetadata(metadata, rule, remoteConn)
@@ -691,6 +698,58 @@ func logMetadataErr(metadata *C.Metadata, rule C.Rule, proxy C.ProxyAdapter, err
 	} else {
 		log.Warnln("[%s] dial %s (match %s/%s) %s --> %s error: %s", strings.ToUpper(metadata.NetWork.String()), proxy.Name(), rule.RuleType().String(), rule.Payload(), metadata.SourceDetail(), metadata.RemoteAddress(), err.Error())
 	}
+}
+
+func resolveProxyChain(proxy C.ProxyAdapter, metadata *C.Metadata) (chains C.Chain, providerChains C.Chain) {
+	if proxy == nil {
+		return C.Chain{}, C.Chain{}
+	}
+	const maxHops = 16
+	var names []string
+	var providers []string
+	seen := make(map[string]struct{}, 4)
+	cur := proxy
+	for hop := 0; hop < maxHops; hop++ {
+		name := cur.Name()
+		if _, dup := seen[name]; dup {
+			break
+		}
+		seen[name] = struct{}{}
+		names = append(names, name)
+		providers = append(providers, cur.ProxyInfo().ProviderName)
+		next := cur.Unwrap(metadata, false)
+		if next == nil {
+			break
+		}
+		cur = next
+	}
+	// TrackerInfo stores chains leaf-first (innermost exit first, outermost group last).
+	chains = make(C.Chain, len(names))
+	providerChains = make(C.Chain, len(providers))
+	for i := range names {
+		chains[i] = names[len(names)-1-i]
+		providerChains[i] = providers[len(providers)-1-i]
+	}
+	return chains, providerChains
+}
+
+func recordFailedDial(metadata, dialMetadata *C.Metadata, rule C.Rule, proxy C.ProxyAdapter, err error, start time.Time) {
+	if err == nil {
+		return
+	}
+	unwrapMeta := dialMetadata
+	if unwrapMeta == nil {
+		unwrapMeta = metadata
+	}
+	chains, providerChains := resolveProxyChain(proxy, unwrapMeta)
+	// Intentional REJECT / REJECT-DROP blocks are policy decisions, not broken dials.
+	for _, hop := range chains {
+		if hop == "REJECT" || hop == "REJECT-DROP" {
+			return
+		}
+	}
+	fc := statistic.NewFailedConnection(metadata, start, chains, providerChains, rule, err, time.Since(start))
+	statistic.DefaultManager.RecordFailed(fc)
 }
 
 func logMetadata(metadata *C.Metadata, rule C.Rule, remoteConn C.Connection) {

@@ -2,6 +2,7 @@ package statistic
 
 import (
 	"os"
+	"sync"
 	"time"
 
 	"github.com/metacubex/mihomo/common/atomic"
@@ -19,6 +20,8 @@ func init() {
 		downloadBlip:  atomic.NewInt64(0),
 		uploadTotal:   atomic.NewInt64(0),
 		downloadTotal: atomic.NewInt64(0),
+		failedTotal:   atomic.NewInt64(0),
+		failedLimit:   DefaultFailedLimit,
 		pid:           int32(os.Getpid()),
 	}
 
@@ -33,6 +36,12 @@ type Manager struct {
 	downloadBlip  atomic.Int64
 	uploadTotal   atomic.Int64
 	downloadTotal atomic.Int64
+	failedTotal   atomic.Int64
+	failedMu      sync.Mutex
+	failedRing    []*FailedConnection
+	failedHead    int
+	failedCount   int
+	failedLimit   int
 	pid           int32
 	memory        uint64
 }
@@ -106,10 +115,12 @@ func (m *Manager) Snapshot() *Snapshot {
 		return true
 	})
 	return &Snapshot{
-		UploadTotal:   m.uploadTotal.Load(),
-		DownloadTotal: m.downloadTotal.Load(),
-		Connections:   connections,
-		Memory:        m.memory,
+		UploadTotal:       m.uploadTotal.Load(),
+		DownloadTotal:     m.downloadTotal.Load(),
+		Connections:       connections,
+		Memory:            m.memory,
+		FailedTotal:       m.failedTotal.Load(),
+		FailedConnections: m.FailedConnections(0),
 	}
 }
 
@@ -128,6 +139,8 @@ func (m *Manager) ResetStatistic() {
 	m.downloadTemp.Store(0)
 	m.downloadBlip.Store(0)
 	m.downloadTotal.Store(0)
+	m.failedTotal.Store(0)
+	m.ClearFailed()
 }
 
 func (m *Manager) handle() {
@@ -140,8 +153,10 @@ func (m *Manager) handle() {
 }
 
 type Snapshot struct {
-	DownloadTotal int64          `json:"downloadTotal"`
-	UploadTotal   int64          `json:"uploadTotal"`
-	Connections   []*TrackerInfo `json:"connections"`
-	Memory        uint64         `json:"memory"`
+	DownloadTotal     int64               `json:"downloadTotal"`
+	UploadTotal       int64               `json:"uploadTotal"`
+	Connections       []*TrackerInfo      `json:"connections"`
+	Memory            uint64              `json:"memory"`
+	FailedTotal       int64               `json:"failedTotal,omitempty"`
+	FailedConnections []*FailedConnection `json:"failedConnections,omitempty"`
 }

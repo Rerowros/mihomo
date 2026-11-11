@@ -24,6 +24,8 @@ func connectionRouter() http.Handler {
 	r := chi.NewRouter()
 	r.Get("/", getConnections)
 	r.Delete("/", closeAllConnections)
+	r.Get("/failed", getFailedConnections)
+	r.Delete("/failed", clearFailedConnections)
 	r.Delete("/{id}", closeConnection)
 	return r
 }
@@ -91,5 +93,67 @@ func closeAllConnections(w http.ResponseWriter, r *http.Request) {
 		_ = c.Close()
 		return true
 	})
+	render.NoContent(w, r)
+}
+
+func getFailedConnections(w http.ResponseWriter, r *http.Request) {
+	limit := 0
+	if limitStr := r.URL.Query().Get("limit"); limitStr != "" {
+		n, err := strconv.Atoi(limitStr)
+		if err != nil || n < 0 {
+			render.Status(r, http.StatusBadRequest)
+			render.JSON(w, r, newError("limit must be a non-negative integer"))
+			return
+		}
+		limit = n
+	}
+
+	if !(r.Header.Get("Upgrade") == "websocket") {
+		render.JSON(w, r, statistic.DefaultManager.FailedSnapshot(limit))
+		return
+	}
+
+	interval := 1000
+	if intervalStr := r.URL.Query().Get("interval"); intervalStr != "" {
+		t, err := strconv.Atoi(intervalStr)
+		if err != nil || t < minConnectionsInterval || t > maxConnectionsInterval {
+			render.Status(r, http.StatusBadRequest)
+			render.JSON(w, r, newError(fmt.Sprintf("interval must be %d to %d milliseconds", minConnectionsInterval, maxConnectionsInterval)))
+			return
+		}
+		interval = t
+	}
+
+	conn, _, err := wsUpgrade(r, w)
+	if err != nil {
+		return
+	}
+	defer untrackStream(conn)
+
+	buf := &bytes.Buffer{}
+	sendSnapshot := func() error {
+		buf.Reset()
+		snapshot := statistic.DefaultManager.FailedSnapshot(limit)
+		if err := json.NewEncoder(buf).Encode(snapshot); err != nil {
+			return err
+		}
+		return wsWriteServerText(conn, buf.Bytes())
+	}
+
+	if err := sendSnapshot(); err != nil {
+		return
+	}
+
+	tick := time.NewTicker(time.Millisecond * time.Duration(interval))
+	defer tick.Stop()
+	for range tick.C {
+		if err := sendSnapshot(); err != nil {
+			break
+		}
+	}
+}
+
+func clearFailedConnections(w http.ResponseWriter, r *http.Request) {
+	statistic.DefaultManager.ClearFailed()
 	render.NoContent(w, r)
 }
